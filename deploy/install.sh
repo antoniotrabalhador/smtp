@@ -33,6 +33,8 @@ ensure_node() {
     fi
 
     info "Instalando Node.js 22.x para compatibilidade com Vite 8..."
+    apt-get remove -y nodejs libnode-dev libnode108 nodejs-doc 2>/dev/null || true
+    apt-get autoremove -y 2>/dev/null || true
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - || true
     apt-get install -y nodejs || die "Falha ao instalar Node.js"
     node -v >/dev/null 2>&1 || die "Node.js não encontrado após instalação"
