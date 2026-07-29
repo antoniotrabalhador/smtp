@@ -30,6 +30,7 @@ O script vai:
 - Criar serviço systemd para o backend
 - Configurar nginx para servir o painel e a API
 - Solicitar o domínio e pedir um certificado Let's Encrypt
+- Se você responder `s` à pergunta de Cloudflare, criar automaticamente os registros DNS `A` e `CNAME` na Cloudflare
 
 ---
 
@@ -43,6 +44,15 @@ O script vai:
    - `http://IP_DA_VPS` (fallback local)
 
 ---
+
+## Observações de produção
+
+O backend lê `DATABASE_URL` e `CORS_ORIGINS` do arquivo `/opt/smtp-panel/panel.env` criado pelo instalador. Se você estiver fazendo deploy em uma VPS, garanta que o `DATABASE_URL` aponte para um diretório persistente, por exemplo:
+
+```bash
+DATABASE_URL=sqlite:////var/lib/smtp-panel/panel.db
+CORS_ORIGINS=https://SEU_DOMINIO
+```
 
 ## Acesso após instalação
 
@@ -60,6 +70,24 @@ O script vai:
 # Sincronize os arquivos e depois na VPS:
 bash /tmp/smtp-panel-src/deploy/update.sh
 ```
+
+---
+
+## Tunnel no ambiente de desenvolvimento
+
+Se você quiser reabrir um tunnel no seu computador local (não na VPS), rode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\start-dev-tunnel.ps1 -Port 8000
+```
+
+Se quiser matar um tunnel antigo antes de abrir outro:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\start-dev-tunnel.ps1 -Port 8000 -Force
+```
+
+O script abre o tunnel para o backend em `http://127.0.0.1:8000` e imprime a URL pública do Cloudflare.
 
 ---
 

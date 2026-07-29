@@ -34,6 +34,7 @@ class NodeTableBase(SQLModel):
     ssh_password: Optional[str] = None
     ssh_private_key: Optional[str] = None
     tags: Optional[str] = None
+    cloudflare_domain_id: Optional[int] = None
     domain: Optional[str] = None
     email_from: Optional[str] = None
     dkim_selector: Optional[str] = None
@@ -63,6 +64,7 @@ class NodeCreate(SQLModel):
     ssh_password: Optional[str] = None
     ssh_private_key: Optional[str] = None
     tags: Optional[str] = None
+    cloudflare_domain_id: Optional[int] = None
     domain: Optional[str] = None
     email_from: Optional[str] = None
 
@@ -80,6 +82,7 @@ class NodeUpdate(SQLModel):
     ssh_password: Optional[str] = None
     ssh_private_key: Optional[str] = None
     tags: Optional[str] = None
+    cloudflare_domain_id: Optional[int] = None
     domain: Optional[str] = None
     email_from: Optional[str] = None
 
@@ -96,6 +99,7 @@ class NodeRead(SQLModel):
     ssh_user: str
     auth_method: str
     tags: Optional[str] = None
+    cloudflare_domain_id: Optional[int] = None
     domain: Optional[str] = None
     email_from: Optional[str] = None
     dkim_selector: Optional[str] = None
@@ -388,3 +392,44 @@ class WebhookEndpointRead(SQLModel):
     created_at: datetime
     mappings: List[dict] = []
 
+
+class CloudflareConfig(SQLModel, table=True):
+    id: Optional[int] = Field(default=1, primary_key=True)
+    api_token: Optional[str] = None
+    zone_id: Optional[str] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CloudflareConfigUpdate(SQLModel):
+    api_token: Optional[str] = None
+    zone_id: Optional[str] = None
+    clear_token: bool = False
+
+
+class CloudflareConfigRead(SQLModel):
+    has_token: bool
+    zone_id: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+
+class CloudflareDomain(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    domain: str
+    zone_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    _check_domain = field_validator("domain")(_validate_domain)
+
+
+class CloudflareDomainCreate(SQLModel):
+    domain: str
+    zone_id: Optional[str] = None
+
+    _check_domain = field_validator("domain")(_validate_domain)
+
+
+class CloudflareDomainRead(SQLModel):
+    id: int
+    domain: str
+    zone_id: Optional[str] = None
+    created_at: datetime

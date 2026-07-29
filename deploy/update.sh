@@ -8,7 +8,9 @@ set -euo pipefail
 PANEL_DIR="/opt/smtp-panel"
 VENV_DIR="$PANEL_DIR/backend/.venv"
 LOG_DIR="/var/log/smtp-panel"
+DB_DIR="/var/lib/smtp-panel"
 PANEL_USER="smtppanel"
+PANEL_ENV="$PANEL_DIR/panel.env"
 
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
@@ -16,6 +18,13 @@ info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(dirname "$SCRIPT_DIR")"
+
+if [[ ! -f "$PANEL_ENV" ]]; then
+    mkdir -p "$DB_DIR" "$LOG_DIR"
+    printf '%s
+' '# CORS: informe o domínio público aqui depois, ex: https://painel.exemplo.com' 'CORS_ORIGINS=http://localhost:5173' "DATABASE_URL=sqlite:///$DB_DIR/panel.db" > "$PANEL_ENV"
+    chown "$PANEL_USER:$PANEL_USER" "$PANEL_ENV"
+fi
 
 info "Sincronizando arquivos..."
 rsync -a --exclude='**/.venv' --exclude='**/node_modules' --exclude='**/__pycache__' --exclude='**/dist' "$SRC_DIR/backend" "$PANEL_DIR/"

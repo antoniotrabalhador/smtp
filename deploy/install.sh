@@ -22,6 +22,72 @@ DB_DIR="/var/lib/smtp-panel"
 LOG_DIR="/var/log/smtp-panel"
 PANEL_USER="smtppanel"
 
+cloudflare_create_or_update_record() {
+    local record_type="$1"
+    local record_name="$2"
+    local record_content="$3"
+    local proxied="$4"
+    local ttl="$5"
+    local priority="$6"
+
+    if [[ -z "${CF_API_TOKEN:-}" || -z "${CF_ZONE_ID:-}" ]]; then
+        return 0
+    fi
+
+    local payload
+    payload=$(python3 - "$record_type" "$record_name" "$record_content" "$proxied" "$ttl" "$priority" <<'PY'
+import json, sys
+record_type = sys.argv[1]
+record_name = sys.argv[2]
+record_content = sys.argv[3]
+proxied = sys.argv[4]
+ttl = int(sys.argv[5]) if sys.argv[5] else 1
+priority = int(sys.argv[6]) if sys.argv[6] else None
+payload = {
+    "type": record_type,
+    "name": record_name,
+    "content": record_content,
+    "ttl": ttl,
+    "proxied": proxied.lower() == "true"
+}
+if priority is not None:
+    payload["priority"] = priority
+print(json.dumps(payload))
+PY
+)
+
+    local existing_json
+    existing_json=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=${record_type}&name=${record_name}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json")
+
+    local record_id
+    record_id=$(python3 - "$existing_json" <<'PY'
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit("")
+for item in data.get("result", []):
+    if item.get("name"):
+        print(item.get("id", ""))
+        break
+PY
+)
+
+    if [[ -n "$record_id" ]]; then
+        curl -sS -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${record_id}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "$payload" >/dev/null
+    else
+        curl -sS -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "$payload" >/dev/null
+    fi
+}
+
 # ============================================================
 echo -e "\n${BOLD}══════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}   SMTP Fleet Panel — Instalador                      ${NC}"
@@ -35,7 +101,7 @@ apt-get install -y -qq \
     python3 python3-pip python3-venv \
     nodejs npm \
     nginx \
-    curl wget git \
+    curl wget git rsync \
     lsb-release gnupg2 ca-certificates \
     certbot python3-certbot-nginx \
     > /dev/null 2>&1
@@ -51,6 +117,7 @@ SRC_DIR="$(dirname "$SCRIPT_DIR")"
 
 info "Copiando arquivos para $PANEL_DIR ..."
 mkdir -p "$PANEL_DIR" "$DB_DIR" "$LOG_DIR"
+rm -rf "$PANEL_DIR/backend" "$PANEL_DIR/frontend"
 rsync -a --exclude='**/.venv' --exclude='**/node_modules' --exclude='**/__pycache__' --exclude='**/dist' "$SRC_DIR/backend" "$PANEL_DIR/"
 rsync -a --exclude='**/node_modules' --exclude='**/dist' "$SRC_DIR/frontend" "$PANEL_DIR/"
 ok "Arquivos copiados"
@@ -148,6 +215,17 @@ echo ""
 read -rp "Digite o domínio público do painel (ex: painel.exemplo.com): " PANEL_DOMAIN
 PANEL_DOMAIN=${PANEL_DOMAIN:-}
 
+read -rp "Deseja criar os registros DNS na Cloudflare automaticamente? [s/N]: " AUTO_CF
+AUTO_CF=${AUTO_CF:-N}
+
+if [[ "$AUTO_CF" =~ ^[Yy]$ ]]; then
+    read -rp "Cloudflare API Token (com permissão Zone:DNS:Edit): " CF_API_TOKEN
+    read -rp "Cloudflare Zone ID: " CF_ZONE_ID
+else
+    CF_API_TOKEN=""
+    CF_ZONE_ID=""
+fi
+
 if [[ -n "$PANEL_DOMAIN" ]]; then
     read -rp "Digite o e-mail para o certificado Let's Encrypt: " CERT_EMAIL
     CERT_EMAIL=${CERT_EMAIL:-admin@$PANEL_DOMAIN}
@@ -184,6 +262,14 @@ if [[ -n "$PANEL_DOMAIN" ]]; then
 
     if ! certbot --nginx --non-interactive --agree-tos --redirect --email "$CERT_EMAIL" -d "$PANEL_DOMAIN"; then
         warn "Não foi possível obter o certificado automaticamente. Verifique o DNS e rode: certbot --nginx -d $PANEL_DOMAIN"
+    fi
+
+    if [[ -n "$CF_API_TOKEN" && -n "$CF_ZONE_ID" ]]; then
+        info "Criando registros DNS na Cloudflare para $PANEL_DOMAIN..."
+        VPS_IP=$(hostname -I | awk '{print $1}')
+        cloudflare_create_or_update_record "A" "$PANEL_DOMAIN" "$VPS_IP" "true" "1" ""
+        cloudflare_create_or_update_record "CNAME" "www.$PANEL_DOMAIN" "$PANEL_DOMAIN" "true" "1" ""
+        ok "Registros DNS enviados para a Cloudflare"
     fi
 
     sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:5173,https://$PANEL_DOMAIN|" "$PANEL_DIR/panel.env"

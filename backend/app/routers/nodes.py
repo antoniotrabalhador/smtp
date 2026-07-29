@@ -1,3 +1,5 @@
+import logging
+import os
 from typing import List
 
 import dns.resolver
@@ -7,11 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
+from app.cloudflare_api import cf_find_zone_id, cf_upsert_record
 from app.db import get_session
-from app.models import Node, NodeCreate, NodeRead, NodeUpdate, Task, TaskCreate, TaskRead, generate_token
+from app.models import CloudflareConfig, CloudflareDomain, Node, NodeCreate, NodeRead, NodeUpdate, Task, TaskCreate, TaskRead, generate_token
 from app.ssh import stream_bootstrap, test_ssh_connection, send_test_email, stream_install_agent, stream_restart_agent, stream_install_unsubscribe, get_agent_logs
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
+logger = logging.getLogger(__name__)
 
 
 def _check_dns(domain: str, node_ip: str, dkim_selector: str, dkim_record: str, dmarc_record: str) -> list:
@@ -79,15 +83,102 @@ async def verify_dns(node_id: int, session: Session = Depends(get_session)):
     node = session.get(Node, node_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    if not node.domain:
+    linked_domain = session.get(CloudflareDomain, node.cloudflare_domain_id) if node.cloudflare_domain_id else None
+    domain_name = linked_domain.domain if linked_domain else node.domain
+    if not domain_name:
         raise HTTPException(status_code=400, detail="Domínio não configurado")
-    results = _check_dns(node.domain, node.ip, node.dkim_selector, node.dkim_dns_record, node.dmarc_dns_record)
+    results = _check_dns(domain_name, node.ip, node.dkim_selector, node.dkim_dns_record, node.dmarc_dns_record)
     return {"results": results}
+
+
+@router.post("/{node_id}/provision-cloudflare")
+def provision_cloudflare_dns(node_id: int, stage: str = "initial", session: Session = Depends(get_session)):
+    try:
+        node = session.get(Node, node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        if not node.domain:
+            raise HTTPException(status_code=400, detail="Domínio não configurado")
+
+        linked_domain = session.get(CloudflareDomain, node.cloudflare_domain_id) if node.cloudflare_domain_id else None
+        domain_name = linked_domain.domain if linked_domain else node.domain
+
+        cfg = session.get(CloudflareConfig, 1)
+        token = (cfg.api_token if cfg and cfg.api_token else os.getenv("CLOUDFLARE_API_TOKEN", "")).strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="Token Cloudflare não configurado (aba Cloudflare)")
+
+        zone_id = linked_domain.zone_id.strip() if linked_domain and linked_domain.zone_id else (cfg.zone_id.strip() if cfg and cfg.zone_id else None)
+        try:
+            if not zone_id:
+                zone_id = cf_find_zone_id(token, domain_name)
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        ttl = 1
+        if stage not in {"initial", "post_bootstrap"}:
+            raise HTTPException(status_code=400, detail="Stage inválido")
+
+        base_records = [
+            {"type": "A", "name": f"mail.{domain_name}", "content": node.ip, "ttl": ttl, "proxied": False},
+            {"type": "A", "name": domain_name, "content": node.ip, "ttl": ttl, "proxied": False},
+        ]
+
+        if stage == "post_bootstrap":
+            base_records.extend(
+                [
+                    {"type": "MX", "name": domain_name, "content": f"mail.{domain_name}", "priority": 10, "ttl": ttl},
+                    {"type": "TXT", "name": domain_name, "content": f"v=spf1 mx ip4:{node.ip} ~all", "ttl": ttl},
+                ]
+            )
+            if node.dkim_selector and node.dkim_dns_record:
+                base_records.append(
+                    {
+                        "type": "TXT",
+                        "name": f"{node.dkim_selector}._domainkey.{domain_name}",
+                        "content": node.dkim_dns_record,
+                        "ttl": ttl,
+                    }
+                )
+            if node.dmarc_dns_record:
+                base_records.append(
+                    {
+                        "type": "TXT",
+                        "name": f"_dmarc.{domain_name}",
+                        "content": node.dmarc_dns_record,
+                        "ttl": ttl,
+                    }
+                )
+
+        results = []
+        for record in base_records:
+            try:
+                upsert = cf_upsert_record(token, zone_id, record)
+            except RuntimeError as e:
+                raise HTTPException(status_code=502, detail=str(e))
+            results.append(
+                {
+                    "type": record["type"],
+                    "name": record["name"],
+                    "content": record["content"],
+                    "status": upsert["status"],
+                }
+            )
+        return {"success": True, "zone_id": zone_id, "records": results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error provisioning cloudflare dns for node %s", node_id)
+        raise HTTPException(status_code=500, detail="Erro inesperado ao provisionar DNS") from e
 
 
 
 @router.post("", response_model=NodeRead)
 def create_node(node: NodeCreate, session: Session = Depends(get_session)):
+    if node.cloudflare_domain_id:
+        linked_domain = session.get(CloudflareDomain, node.cloudflare_domain_id)
+        if not linked_domain:
+            raise HTTPException(status_code=400, detail="Domínio Cloudflare vinculado não encontrado")
+        node.domain = linked_domain.domain
     db_node = Node.model_validate(node)
     session.add(db_node)
     session.commit()
@@ -122,7 +213,17 @@ def update_node(node_id: int, patch: NodeUpdate, session: Session = Depends(get_
     node = session.get(Node, node_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    for field, value in patch.model_dump(exclude_unset=True).items():
+    patch_data = patch.model_dump(exclude_unset=True)
+    if "cloudflare_domain_id" in patch_data:
+        domain_id = patch_data["cloudflare_domain_id"]
+        if domain_id is None:
+            patch_data["domain"] = None
+        else:
+            linked_domain = session.get(CloudflareDomain, domain_id)
+            if not linked_domain:
+                raise HTTPException(status_code=400, detail="Domínio Cloudflare vinculado não encontrado")
+            patch_data["domain"] = linked_domain.domain
+    for field, value in patch_data.items():
         setattr(node, field, value)
     session.add(node)
     session.commit()

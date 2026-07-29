@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import create_db_and_tables
-from app.routers import agent, campaigns, email, nodes, recipient_lists, unsubscribe, webhooks
+from app.routers import agent, campaigns, cloudflare, email, nodes, recipient_lists, unsubscribe, webhooks
 
 app = FastAPI(title="SMTP Fleet Panel")
 
@@ -25,6 +25,7 @@ app.include_router(campaigns.router)
 app.include_router(recipient_lists.router)
 app.include_router(unsubscribe.router)
 app.include_router(webhooks.router)
+app.include_router(cloudflare.router)
 
 
 @app.on_event("startup")

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlmodel import Session, select
 
 from app.db import get_session, engine
@@ -17,6 +17,26 @@ def _get_node_by_token(token: str, session: Session) -> Node:
     if not node:
         raise HTTPException(status_code=401, detail="Invalid agent token")
     return node
+
+
+def _claim_pending_task(session: Session, task_id: int) -> bool:
+    result = session.exec(
+        update(Task)
+        .where(Task.id == task_id, Task.status == "pending")
+        .values(status="running")
+    )
+    session.commit()
+    return result.rowcount == 1
+
+
+def _claim_pending_shard(session: Session, shard_id: int) -> bool:
+    result = session.exec(
+        update(CampaignShard)
+        .where(CampaignShard.id == shard_id, CampaignShard.status == "pending")
+        .values(status="running")
+    )
+    session.commit()
+    return result.rowcount == 1
 
 
 def _dispatch_shard_chunk(shard: CampaignShard, node: Node, session: Session) -> Task | None:
@@ -110,16 +130,16 @@ def poll_tasks(node_id: int, x_agent_token: str = Header(...), session: Session 
     ).first()
 
     if task:
-        task.status = "running"
-        session.add(task)
-        session.commit()
+        if not _claim_pending_task(session, task.id):
+            from fastapi.responses import Response
+            return Response(status_code=204)
         session.refresh(task)
     else:
-        # 2. Check for active campaign shards
+        # 2. Check for pending campaign shards
         shard = session.exec(
             select(CampaignShard).where(
                 CampaignShard.node_id == node_id,
-                CampaignShard.status.in_(["pending", "running"]),
+                CampaignShard.status == "pending",
             ).order_by(CampaignShard.created_at)
         ).first()
 
@@ -127,12 +147,9 @@ def poll_tasks(node_id: int, x_agent_token: str = Header(...), session: Session 
             from fastapi.responses import Response
             return Response(status_code=204)
 
-        # Don't dispatch a new chunk if one is already running for this shard
-        if shard.current_task_id:
-            existing = session.get(Task, shard.current_task_id)
-            if existing and existing.status in ("pending", "running"):
-                from fastapi.responses import Response
-                return Response(status_code=204)
+        if not _claim_pending_shard(session, shard.id):
+            from fastapi.responses import Response
+            return Response(status_code=204)
 
         task = _dispatch_shard_chunk(shard, node, session)
         if not task:
@@ -202,104 +219,6 @@ def report_task(
                 shard.status = "pending"  # ready for next chunk
             session.add(shard)
 
-    session.commit()
-    return {"ok": True}
-
-
-@router.post("/heartbeat")
-def heartbeat(
-    node_id: int,
-    payload: dict,
-    x_agent_token: str = Header(...),
-    session: Session = Depends(get_session),
-):
-    """Agent signals it's alive."""
-    node = _get_node_by_token(x_agent_token, session)
-    if node.id != node_id:
-        raise HTTPException(status_code=403, detail="Token/node_id mismatch")
-
-    node.agent_status = payload.get("status", "online")
-    node.agent_last_seen = datetime.utcnow()
-    session.add(node)
-    session.commit()
-    return {"ok": True}
-
-
-router = APIRouter(prefix="/api/agent", tags=["agent"])
-
-
-def _get_node_by_token(token: str, session: Session) -> Node:
-    node = session.exec(select(Node).where(Node.agent_token == token)).first()
-    if not node:
-        raise HTTPException(status_code=401, detail="Invalid agent token")
-    return node
-
-
-@router.get("/tasks")
-def poll_tasks(node_id: int, x_agent_token: str = Header(...), session: Session = Depends(get_session)):
-    """Agent polls for the next pending task."""
-    node = _get_node_by_token(x_agent_token, session)
-    if node.id != node_id:
-        raise HTTPException(status_code=403, detail="Token/node_id mismatch")
-
-    task = session.exec(
-        select(Task).where(Task.node_id == node_id, Task.status == "pending")
-        .order_by(Task.created_at)
-    ).first()
-
-    if not task:
-        from fastapi.responses import Response
-        return Response(status_code=204)
-
-    task.status = "running"
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-
-    # Build unsubscribe_url from node domain if not set on task
-    unsub_url = task.unsubscribe_url or ""
-    if not unsub_url and node.domain and node.id:
-        unsub_url = f"https://{node.domain}/unsubscribe?email={{{{email}}}}&node_id={node.id}"
-
-    # Auto-generate Feedback-ID if not set: campaignID:domain:nodeN:goog
-    feedback_id = task.feedback_id or ""
-    if not feedback_id and node.domain:
-        feedback_id = f"task{task.id}:{node.domain}:node{node.id}:goog"
-
-    return {
-        "id": task.id,
-        "subject": task.subject,
-        "body": task.body,
-        "html": task.html or "",
-        "plain_text": task.plain_text or task.body,
-        "from_address": task.from_address,
-        "recipients": json.loads(task.recipients),
-        "rate_per_hour": task.rate_per_hour,
-        "unsubscribe_url": unsub_url,
-        "feedback_id": feedback_id,
-        "cta_url": task.cta_url or "",
-    }
-
-
-@router.post("/tasks/{task_id}/report")
-def report_task(
-    task_id: int,
-    payload: dict,
-    x_agent_token: str = Header(...),
-    session: Session = Depends(get_session),
-):
-    """Agent reports task completion."""
-    node = _get_node_by_token(x_agent_token, session)
-    task = session.get(Task, task_id)
-    if not task or task.node_id != node.id:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task.sent_count = payload.get("sent_count", 0)
-    task.error_count = payload.get("error_count", 0)
-    task.task_log = payload.get("log", "")
-    task.status = "failed" if task.error_count > 0 and task.sent_count == 0 else "done"
-    task.finished_at = datetime.utcnow()
-    session.add(task)
     session.commit()
     return {"ok": True}
 

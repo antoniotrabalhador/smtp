@@ -7,6 +7,7 @@ import EmailBuilder from "./components/EmailBuilder"
 import RecipientLists from "./components/RecipientLists"
 import CampaignMonitor from "./components/CampaignMonitor"
 import Webhooks from "./components/Webhooks"
+import CloudflareSettings from "./components/CloudflareSettings"
 
 function TabButton({ id, active, onClick, children }) {
   return (
@@ -34,7 +35,7 @@ function App() {
   const [health, setHealth] = useState("checking...")
   const [nodes, setNodes] = useState([])
   const [showAddForm, setShowAddForm] = useState(false)
-  const [activeTab, setActiveTab] = useState("vps")
+  const [activeTab, setActiveTab] = useState("domains")
 
   useEffect(() => {
     fetch("/api/health")
@@ -61,6 +62,7 @@ function App() {
           <p style={{ margin: "8px 0 0 0", fontSize: "0.9em", color: "#8b949e" }}>Backend status: {health}</p>
         </div>
         <div style={{ display: "flex", gap: 0 }}>
+          <TabButton id="domains" active={activeTab === "domains"} onClick={setActiveTab}>🌐 Domínios</TabButton>
           <TabButton id="vps"       active={activeTab === "vps"}       onClick={setActiveTab}>🖥️ VPS Manager</TabButton>
           <TabButton id="email"     active={activeTab === "email"}     onClick={setActiveTab}>📧 Email Builder</TabButton>
           <TabButton id="campaigns" active={activeTab === "campaigns"} onClick={setActiveTab}>🚀 Campanhas</TabButton>
@@ -90,6 +92,7 @@ function App() {
         {activeTab === "monitor"   && <CampaignMonitor />}
         {activeTab === "lists"     && <RecipientLists />}
         {activeTab === "webhooks"  && <Webhooks />}
+        {activeTab === "domains" && <CloudflareSettings />}
       </div>
     </div>
   )

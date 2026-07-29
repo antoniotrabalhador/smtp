@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { deleteNode, testSsh, updateNode } from "../api"
+import { useEffect, useState } from "react"
+import { deleteNode, listCloudflareDomains, testSsh, updateNode } from "../api"
 
 function CopyField({ label, value }) {
   const [copied, setCopied] = useState(false)
@@ -38,7 +38,8 @@ function DnsRecord({ tipo, fields }) {
 
 export default function NodeRow({ node, onChanged }) {
   const [open, setOpen] = useState(false)
-  const [domain, setDomain] = useState(node.domain || "")
+  const [cloudflareDomainId, setCloudflareDomainId] = useState(node.cloudflare_domain_id || "")
+  const [cloudflareDomains, setCloudflareDomains] = useState([])
   const [savingDomain, setSavingDomain] = useState(false)
   const [domainError, setDomainError] = useState(null)
 
@@ -57,6 +58,8 @@ export default function NodeRow({ node, onChanged }) {
 
   const [verifying, setVerifying] = useState(false)
   const [dnsResults, setDnsResults] = useState(null)
+  const [provisioningDns, setProvisioningDns] = useState(false)
+  const [provisionResult, setProvisionResult] = useState(null)
 
   const [testEmailTo, setTestEmailTo] = useState("")
   const [sendingTest, setSendingTest] = useState(false)
@@ -71,11 +74,33 @@ export default function NodeRow({ node, onChanged }) {
   const [unsubLog, setUnsubLog] = useState([])
   const [unsubResult, setUnsubResult] = useState(null)
 
+  useEffect(() => {
+    listCloudflareDomains().then(setCloudflareDomains).catch(() => setCloudflareDomains([]))
+  }, [])
+
+  async function readResponseBody(res) {
+    const text = await res.text()
+    if (!text) return null
+    try {
+      return JSON.parse(text)
+    } catch {
+      return { raw: text }
+    }
+  }
+
+  useEffect(() => {
+    setCloudflareDomainId(node.cloudflare_domain_id || "")
+  }, [node.cloudflare_domain_id])
+
   async function handleSaveDomain() {
     setSavingDomain(true)
     setDomainError(null)
     try {
-      await updateNode(node.id, { domain: domain || null })
+      if (!cloudflareDomainId) {
+        await updateNode(node.id, { cloudflare_domain_id: null, domain: null, email_from: null })
+      } else {
+        await updateNode(node.id, { cloudflare_domain_id: Number(cloudflareDomainId), email_from: null })
+      }
       onChanged()
     } catch (err) {
       setDomainError(err.message)
@@ -118,6 +143,31 @@ export default function NodeRow({ node, onChanged }) {
       setDnsResults([{ label: "Erro", ok: false, detail: err.message }])
     } finally {
       setVerifying(false)
+    }
+  }
+
+  async function handleProvisionCloudflareDns(stage = "initial") {
+    setProvisioningDns(true)
+    setProvisionResult(null)
+    try {
+      const res = await fetch(`/api/nodes/${node.id}/provision-cloudflare?stage=${encodeURIComponent(stage)}`, { method: "POST" })
+      const data = await readResponseBody(res)
+      if (!res.ok) {
+        setProvisionResult({
+          success: false,
+          message: data?.detail || data?.raw || "Falha ao criar DNS na Cloudflare",
+        })
+        return
+      }
+      setProvisionResult({
+        success: true,
+        message: `Cloudflare OK (${data.records?.length || 0} registros). Zona: ${data.zone_id}`,
+        records: data.records || [],
+      })
+    } catch (err) {
+      setProvisionResult({ success: false, message: err.message })
+    } finally {
+      setProvisioningDns(false)
     }
   }
 
@@ -434,11 +484,21 @@ export default function NodeRow({ node, onChanged }) {
           <div className="node-section">
             <span className="node-section-label">Domínio</span>
             <div className="domain-row">
-              <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="seudominio.com" />
+              <select value={cloudflareDomainId} onChange={(e) => setCloudflareDomainId(e.target.value)}>
+                <option value="">Selecione um domínio</option>
+                {cloudflareDomains.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.domain}
+                  </option>
+                ))}
+              </select>
               <button onClick={handleSaveDomain} disabled={savingDomain}>
                 {savingDomain ? "..." : "Salvar"}
               </button>
             </div>
+            {cloudflareDomains.length === 0 && (
+              <div className="node-card-meta">Cadastre domínios na aba Cloudflare para vincular à VPS.</div>
+            )}
             {domainError && <div className="status-err">{domainError}</div>}
 
             {node.domain && (
@@ -461,25 +521,33 @@ export default function NodeRow({ node, onChanged }) {
                   ["IPv4", node.ip],
                 ]} />
 
-                <DnsRecord tipo="MX" fields={[
-                  ["Nome", "@"],
-                  ["Classe", "IN"],
-                  ["TTL", "14400"],
-                  ["Prioridade", "10"],
-                  ["Destino", `mail.${node.domain}`],
-                ]} />
-
-                <DnsRecord tipo="TXT (SPF)" fields={[
-                  ["Nome", "@"],
-                  ["Classe", "IN"],
-                  ["TTL", "14400"],
-                  ["Texto", `v=spf1 mx ip4:${node.ip} ~all`],
-                ]} />
-
                 <div className="dns-hint-note">
                   PTR (reverso): configurar no painel do seu provedor VPS, apontando {node.ip} → mail.{node.domain}<br />
-                  DKIM e DMARC: gerados após o bootstrap.
+                  No cadastro inicial: apenas <strong>A mail</strong> e <strong>A apex</strong>.<br />
+                  Depois do bootstrap: adicionar <strong>MX</strong>, <strong>SPF</strong>, <strong>DKIM</strong> e <strong>DMARC</strong>.
                 </div>
+                <div style={{ marginTop: 10 }}>
+                  <button onClick={() => handleProvisionCloudflareDns("initial")} disabled={provisioningDns}>
+                    {provisioningDns ? "Sincronizando DNS..." : "☁️ Criar DNS inicial"}
+                  </button>
+                </div>
+                {provisionResult && (
+                  <div className={`section-result ${provisionResult.success ? "status-ok" : "status-err"}`} style={{ marginTop: 8 }}>
+                    <div>{provisionResult.message}</div>
+                    {provisionResult.success && provisionResult.records?.length > 0 && (
+                      <details style={{ marginTop: 6 }}>
+                        <summary>Ver registros aplicados</summary>
+                        <div style={{ marginTop: 6, fontSize: "0.85em" }}>
+                          {provisionResult.records.map((r, idx) => (
+                            <div key={`${r.type}-${r.name}-${idx}`}>
+                              [{r.status}] {r.type} {r.name} → {r.content}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -505,6 +573,15 @@ export default function NodeRow({ node, onChanged }) {
                     {testEmailResult.message}
                   </div>
                 )}
+                <div style={{ marginTop: 12, borderTop: "1px solid #30363d", paddingTop: 10 }}>
+                  <div style={{ fontSize: "0.85em", color: "#666", marginBottom: 6 }}>DNS pós-bootstrap:</div>
+                  <button onClick={() => handleProvisionCloudflareDns("post_bootstrap")} disabled={provisioningDns}>
+                    {provisioningDns ? "Sincronizando..." : "☁️ Criar registros finais"}
+                  </button>
+                  <div className="dns-hint-note" style={{ marginTop: 8 }}>
+                    Isso adiciona MX, SPF, DKIM e DMARC usando os dados gerados no bootstrap.
+                  </div>
+                </div>
               </div>
             )}
           </div>
