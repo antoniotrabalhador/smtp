@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ============================================================
 #  SMTP Fleet Panel — Deploy Script
 #  Executa na VPS como root ou com sudo
@@ -33,9 +33,10 @@ ensure_node() {
     fi
 
     info "Instalando Node.js 22.x para compatibilidade com Vite 8..."
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    apt-get install -y -qq nodejs >/dev/null 2>&1
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
+    apt-get install -y nodejs >/dev/null 2>&1
     node -v >/dev/null 2>&1 || die "Falha ao instalar Node.js"
+    ok "Node.js $(node -v) instalado"
 }
 
 cloudflare_create_or_update_record() {

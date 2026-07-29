@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ============================================================
 #  SMTP Fleet Panel — Script de Atualização
 #  Executa na VPS como root após sincronizar os arquivos
