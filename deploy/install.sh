@@ -22,6 +22,22 @@ DB_DIR="/var/lib/smtp-panel"
 LOG_DIR="/var/log/smtp-panel"
 PANEL_USER="smtppanel"
 
+ensure_node() {
+    if command -v node >/dev/null 2>&1; then
+        local node_version major
+        node_version=$(node -v 2>/dev/null | sed 's/^v//')
+        major=$(echo "$node_version" | cut -d. -f1)
+        if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 20 )); then
+            return 0
+        fi
+    fi
+
+    info "Instalando Node.js 22.x para compatibilidade com Vite 8..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y -qq nodejs >/dev/null 2>&1
+    node -v >/dev/null 2>&1 || die "Falha ao instalar Node.js"
+}
+
 cloudflare_create_or_update_record() {
     local record_type="$1"
     local record_name="$2"
@@ -99,12 +115,12 @@ info "Atualizando pacotes..."
 apt-get update -qq
 apt-get install -y -qq \
     python3 python3-pip python3-venv \
-    nodejs npm \
     nginx \
     curl wget git rsync \
     lsb-release gnupg2 ca-certificates \
     certbot python3-certbot-nginx \
     > /dev/null 2>&1
+ensure_node
 ok "Pacotes instalados"
 
 if ! id "$PANEL_USER" &>/dev/null; then

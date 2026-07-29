@@ -12,6 +12,22 @@ DB_DIR="/var/lib/smtp-panel"
 PANEL_USER="smtppanel"
 PANEL_ENV="$PANEL_DIR/panel.env"
 
+ensure_node() {
+    if command -v node >/dev/null 2>&1; then
+        local node_version major
+        node_version=$(node -v 2>/dev/null | sed 's/^v//')
+        major=$(echo "$node_version" | cut -d. -f1)
+        if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 20 )); then
+            return 0
+        fi
+    fi
+
+    info "Atualizando Node.js para 22.x para compatibilidade com Vite 8..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y -qq nodejs >/dev/null 2>&1
+    node -v >/dev/null 2>&1 || { echo "ERRO — falha ao instalar Node.js"; exit 1; }
+}
+
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
 info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
@@ -31,6 +47,8 @@ rsync -a --exclude='**/.venv' --exclude='**/node_modules' --exclude='**/__pycach
 rsync -a --exclude='**/node_modules' --exclude='**/dist' "$SRC_DIR/frontend" "$PANEL_DIR/"
 
 "$VENV_DIR/bin/pip" install --quiet -r "$PANEL_DIR/backend/requirements.txt"
+
+ensure_node
 
 info "Rebuilding frontend..."
 cd "$PANEL_DIR/frontend"
