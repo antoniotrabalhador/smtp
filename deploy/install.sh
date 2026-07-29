@@ -228,25 +228,25 @@ echo -e "${BOLD}   Configuração do domínio + HTTPS                  ${NC}"
 echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
 echo ""
 
-read -rp "Digite o domínio público do painel (ex: painel.exemplo.com): " PANEL_DOMAIN
+read -rp "Digite o domínio público do painel (ex: painel.exemplo.com): " PANEL_DOMAIN </dev/tty
 PANEL_DOMAIN=${PANEL_DOMAIN:-}
 
-read -rp "Deseja criar os registros DNS na Cloudflare automaticamente? [s/N]: " AUTO_CF
+read -rp "Deseja criar os registros DNS na Cloudflare automaticamente? [s/N]: " AUTO_CF </dev/tty
 AUTO_CF=${AUTO_CF:-N}
 
 if [[ "$AUTO_CF" =~ ^[Yy]$ ]]; then
-    read -rp "Cloudflare API Token (com permissão Zone:DNS:Edit): " CF_API_TOKEN
-    read -rp "Cloudflare Zone ID: " CF_ZONE_ID
+    read -rp "Cloudflare API Token (com permissão Zone:DNS:Edit): " CF_API_TOKEN </dev/tty
+    read -rp "Cloudflare Zone ID: " CF_ZONE_ID </dev/tty
 else
     CF_API_TOKEN=""
     CF_ZONE_ID=""
 fi
 
 if [[ -n "$PANEL_DOMAIN" ]]; then
-    read -rp "Digite o e-mail para o certificado Let's Encrypt: " CERT_EMAIL
+    read -rp "Digite o e-mail para o certificado Let's Encrypt: " CERT_EMAIL </dev/tty
     CERT_EMAIL=${CERT_EMAIL:-admin@$PANEL_DOMAIN}
     echo -e "${YELLOW}Antes de continuar, confirme que o DNS A/AAAA do domínio aponta para esta VPS.${NC}"
-    read -rp "Pressione Enter quando o DNS estiver pronto..." _
+    read -rp "Pressione Enter quando o DNS estiver pronto..." _ </dev/tty
 
     printf '%s\n' \
         'server {' \
