@@ -1,0 +1,43 @@
+﻿#!/usr/bin/env bash
+# ============================================================
+#  SMTP Fleet Panel — Script de Atualização
+#  Executa na VPS como root após sincronizar os arquivos
+# ============================================================
+set -euo pipefail
+
+PANEL_DIR="/opt/smtp-panel"
+VENV_DIR="$PANEL_DIR/backend/.venv"
+LOG_DIR="/var/log/smtp-panel"
+PANEL_USER="smtppanel"
+
+GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
+info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$(dirname "$SCRIPT_DIR")"
+
+info "Sincronizando arquivos..."
+rsync -a --exclude='**/.venv' --exclude='**/node_modules' --exclude='**/__pycache__' --exclude='**/dist' "$SRC_DIR/backend" "$PANEL_DIR/"
+rsync -a --exclude='**/node_modules' --exclude='**/dist' "$SRC_DIR/frontend" "$PANEL_DIR/"
+
+"$VENV_DIR/bin/pip" install --quiet -r "$PANEL_DIR/backend/requirements.txt"
+
+info "Rebuilding frontend..."
+cd "$PANEL_DIR/frontend"
+npm install --silent
+npm run build --silent
+
+chown -R "$PANEL_USER:$PANEL_USER" "$PANEL_DIR"
+
+info "Reiniciando backend..."
+systemctl restart smtp-panel
+sleep 2
+if systemctl is-active smtp-panel > /dev/null; then
+    ok "Backend reiniciado"
+else
+    echo "ERRO — log:"
+    journalctl -u smtp-panel -n 20
+fi
+
+ok "Atualização concluída"

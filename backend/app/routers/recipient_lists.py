@@ -1,0 +1,196 @@
+import csv
+import io
+import re
+from datetime import datetime
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy import text
+from sqlmodel import Session, select
+
+from app.db import get_session, engine
+from app.models import RecipientList, RecipientListRead, Recipient
+
+router = APIRouter(prefix="/api/recipient-lists", tags=["recipient-lists"])
+
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+(\.[a-zA-Z0-9\-]+)+$")
+
+CHUNK = 5_000  # rows per INSERT transaction
+
+
+def _valid_email(email: str) -> bool:
+    return bool(_EMAIL_RE.match(email.strip()))
+
+
+@router.get("", response_model=List[RecipientListRead])
+def list_recipient_lists(session: Session = Depends(get_session)):
+    lists = session.exec(select(RecipientList).order_by(RecipientList.created_at.desc())).all()
+    return lists
+
+
+@router.post("", response_model=RecipientListRead)
+def create_recipient_list(payload: dict, session: Session = Depends(get_session)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome obrigatório")
+    rl = RecipientList(name=name)
+    session.add(rl)
+    session.commit()
+    session.refresh(rl)
+    return rl
+
+
+@router.post("/{list_id}/upload")
+async def upload_csv(
+    list_id: int,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    """Stream-parse a CSV/TXT file and bulk-insert valid emails."""
+    rl = session.get(RecipientList, list_id)
+    if not rl:
+        raise HTTPException(status_code=404, detail="Lista não encontrada")
+
+    # Get current max row_index for this list (in case of append)
+    existing_max = session.exec(
+        select(Recipient.row_index)
+        .where(Recipient.list_id == list_id)
+        .order_by(Recipient.row_index.desc())
+    ).first()
+    next_index = (existing_max + 1) if existing_max is not None else 0
+
+    content = await file.read()
+    text_content = content.decode("utf-8", errors="replace")
+
+    # Auto-detect: CSV with header, CSV without, or plain list
+    lines = text_content.splitlines()
+    reader = csv.reader(lines)
+
+    added = 0
+    skipped_invalid = 0
+    skipped_duplicate = 0
+
+    # Load existing emails for this list to detect duplicates (using a set)
+    existing_emails: set = set(
+        session.exec(
+            text(f"SELECT email FROM recipient WHERE list_id = {list_id}")
+        ).all()
+    )
+    existing_emails = {row[0].lower() for row in existing_emails}
+
+    batch: list[dict] = []
+
+    def flush_batch():
+        nonlocal next_index
+        if not batch:
+            return
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO recipient (list_id, email, status, row_index) "
+                    "VALUES (:list_id, :email, :status, :row_index)"
+                ),
+                batch,
+            )
+            conn.commit()
+        batch.clear()
+
+    for row in reader:
+        if not row:
+            continue
+        # Find first column that looks like an email
+        email_col = None
+        for cell in row:
+            cell = cell.strip().lower()
+            if _valid_email(cell):
+                email_col = cell
+                break
+        if not email_col:
+            skipped_invalid += 1
+            continue
+        if email_col in existing_emails:
+            skipped_duplicate += 1
+            continue
+
+        existing_emails.add(email_col)
+        batch.append({"list_id": list_id, "email": email_col, "status": "active", "row_index": next_index})
+        next_index += 1
+        added += 1
+
+        if len(batch) >= CHUNK:
+            flush_batch()
+
+    flush_batch()
+
+    # Update counts
+    total = session.exec(
+        text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {list_id}")
+    ).one()[0]
+    active = session.exec(
+        text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {list_id} AND status = 'active'")
+    ).one()[0]
+
+    rl.total_count = total
+    rl.active_count = active
+    session.add(rl)
+    session.commit()
+    session.refresh(rl)
+
+    return {
+        "ok": True,
+        "added": added,
+        "skipped_invalid": skipped_invalid,
+        "skipped_duplicate": skipped_duplicate,
+        "total_count": rl.total_count,
+        "active_count": rl.active_count,
+    }
+
+
+@router.get("/{list_id}", response_model=RecipientListRead)
+def get_recipient_list(list_id: int, session: Session = Depends(get_session)):
+    rl = session.get(RecipientList, list_id)
+    if not rl:
+        raise HTTPException(status_code=404, detail="Lista não encontrada")
+    return rl
+
+
+@router.delete("/{list_id}")
+def delete_recipient_list(list_id: int, session: Session = Depends(get_session)):
+    rl = session.get(RecipientList, list_id)
+    if not rl:
+        raise HTTPException(status_code=404, detail="Lista não encontrada")
+    # Cascade delete recipients
+    with engine.connect() as conn:
+        conn.execute(text(f"DELETE FROM recipient WHERE list_id = {list_id}"))
+        conn.commit()
+    session.delete(rl)
+    session.commit()
+    return {"ok": True}
+
+
+@router.post("/{list_id}/unsubscribe")
+def mark_unsubscribed(list_id: int, payload: dict, session: Session = Depends(get_session)):
+    """Mark an email as unsubscribed in all lists (called by unsubscribe flow)."""
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email obrigatório")
+    with engine.connect() as conn:
+        conn.execute(
+            text("UPDATE recipient SET status = 'unsubscribed' WHERE email = :email"),
+            {"email": email},
+        )
+        conn.commit()
+    # Refresh active counts for all lists containing this email
+    affected_lists = session.exec(
+        select(Recipient.list_id).where(Recipient.email == email).distinct()
+    ).all()
+    for lid in affected_lists:
+        rl2 = session.get(RecipientList, lid)
+        if rl2:
+            active = session.exec(
+                text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {lid} AND status = 'active'")
+            ).one()[0]
+            rl2.active_count = active
+            session.add(rl2)
+    session.commit()
+    return {"ok": True}

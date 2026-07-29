@@ -1,0 +1,52 @@
+const API_BASE = "/api"
+
+export async function listNodes() {
+  const res = await fetch(`${API_BASE}/nodes`)
+  if (!res.ok) throw new Error("failed to list nodes")
+  return res.json()
+}
+
+export async function createNode(node) {
+  const res = await fetch(`${API_BASE}/nodes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(node),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || "failed to create node")
+  }
+  return res.json()
+}
+
+export async function deleteNode(id) {
+  const res = await fetch(`${API_BASE}/nodes/${id}`, { method: "DELETE" })
+  if (!res.ok) throw new Error("failed to delete node")
+}
+
+export async function testSsh(id) {
+  const res = await fetch(`${API_BASE}/nodes/${id}/test-ssh`, { method: "POST" })
+  return res.json()
+}
+
+export async function updateNode(id, patch) {
+  const res = await fetch(`${API_BASE}/nodes/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail?.[0]?.msg || err.detail || "failed to update node")
+  }
+  return res.json()
+}
+
+export async function bootstrapNode(id) {
+  const res = await fetch(`${API_BASE}/nodes/${id}/bootstrap`, { method: "POST" })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || "failed to bootstrap node")
+  }
+  return res.json()
+}

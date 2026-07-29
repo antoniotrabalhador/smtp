@@ -1,0 +1,596 @@
+import json
+import math
+from collections import defaultdict
+from datetime import datetime
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
+from sqlmodel import Session, select
+
+from app.db import get_session, engine
+from app.models import Campaign, CampaignCreate, CampaignShard, EmailTemplate, Node, RecipientList, Task
+from app.ssh import send_test_email
+
+router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
+
+
+def _chunk_recipients(recipients: List[str], bucket_count: int) -> List[List[str]]:
+    buckets = [[] for _ in range(bucket_count)]
+    for index, recipient in enumerate(recipients):
+        buckets[index % bucket_count].append(recipient)
+    return buckets
+
+
+def _status_for_tasks(tasks: List[Task]) -> str:
+    if not tasks:
+        return "empty"
+    statuses = {task.status for task in tasks}
+    if "running" in statuses:
+        return "running"
+    if statuses == {"done"}:
+        return "done"
+    if statuses <= {"pending"}:
+        return "pending"
+    if "failed" in statuses and len(statuses) == 1:
+        return "failed"
+    if "failed" in statuses:
+        return "partial"
+    return sorted(statuses)[0]
+
+
+def _serialize_campaign(campaign: Campaign, tasks: List[Task], nodes_by_id: dict[int, Node]) -> dict:
+    node_summaries = []
+    for task in tasks:
+        node = nodes_by_id.get(task.node_id)
+        node_summaries.append(
+            {
+                "task_id": task.id,
+                "node_id": task.node_id,
+                "node_name": node.hostname if node else f"Node {task.node_id}",
+                "status": task.status,
+                "sent_count": task.sent_count,
+                "error_count": task.error_count,
+                "recipient_count": len(json.loads(task.recipients or "[]")),
+                "from_address": task.from_address,
+                "created_at": task.created_at,
+                "finished_at": task.finished_at,
+            }
+        )
+
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "parent_campaign_id": campaign.parent_campaign_id,
+        "template_id": campaign.template_id,
+        "subject": campaign.subject,
+        "cta_url": campaign.cta_url,
+        "rate_per_hour": campaign.rate_per_hour,
+        "test_recipient": campaign.test_recipient,
+        "is_test": campaign.is_test,
+        "is_draft": campaign.is_draft,
+        "total_recipients": campaign.total_recipients,
+        "created_at": campaign.created_at,
+        "status": "draft" if campaign.is_draft else _status_for_tasks(tasks),
+        "sent_count": sum(task.sent_count for task in tasks),
+        "error_count": sum(task.error_count for task in tasks),
+        "nodes": node_summaries,
+    }
+
+
+def _serialize_child_campaign(campaign: Campaign) -> dict:
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "parent_campaign_id": campaign.parent_campaign_id,
+        "template_id": campaign.template_id,
+        "subject": campaign.subject,
+        "cta_url": campaign.cta_url,
+        "rate_per_hour": campaign.rate_per_hour,
+        "test_recipient": campaign.test_recipient,
+        "is_test": campaign.is_test,
+        "is_draft": campaign.is_draft,
+        "total_recipients": campaign.total_recipients,
+        "created_at": campaign.created_at,
+        "status": "draft" if campaign.is_draft else "pending",
+        "sent_count": 0,
+        "error_count": 0,
+        "nodes": [],
+        "children": [],
+    }
+
+
+def _load_nodes(node_ids: List[int], session: Session) -> List[Node]:
+    nodes = session.exec(select(Node).where(Node.id.in_(node_ids))).all()
+    if len(nodes) != len(set(node_ids)):
+        raise HTTPException(status_code=400, detail="Uma ou mais VPS nao foram encontradas")
+    invalid = [node.hostname for node in nodes if not node.email_from]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"VPS sem email_from configurado: {', '.join(invalid)}")
+    return nodes
+
+
+def _load_template(template_id: int, session: Session) -> EmailTemplate:
+    template = session.get(EmailTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template nao encontrado")
+    return template
+
+
+@router.get("")
+def list_campaigns(session: Session = Depends(get_session)):
+    campaigns = session.exec(select(Campaign).order_by(Campaign.created_at.desc())).all()
+    if not campaigns:
+        return []
+
+    roots = [campaign for campaign in campaigns if campaign.parent_campaign_id is None]
+    children = [campaign for campaign in campaigns if campaign.parent_campaign_id is not None]
+    campaign_ids = [campaign.id for campaign in campaigns if campaign.id is not None]
+    tasks = session.exec(select(Task).where(Task.campaign_id.in_(campaign_ids)).order_by(Task.created_at.desc())).all()
+    tasks_by_campaign: dict[int, List[Task]] = defaultdict(list)
+    node_ids = {task.node_id for task in tasks}
+    for task in tasks:
+        if task.campaign_id is not None:
+            tasks_by_campaign[task.campaign_id].append(task)
+
+    nodes_by_id = {node.id: node for node in session.exec(select(Node).where(Node.id.in_(node_ids))).all()}
+    children_by_parent: dict[int, List[dict]] = defaultdict(list)
+    for child in children:
+        if child.parent_campaign_id is not None:
+            children_by_parent[child.parent_campaign_id].append(
+                _serialize_campaign(child, tasks_by_campaign.get(child.id, []), nodes_by_id)
+            )
+
+    roots_serialized = []
+    for campaign in roots:
+        data = _serialize_campaign(campaign, tasks_by_campaign.get(campaign.id, []), nodes_by_id)
+        data["children"] = children_by_parent.get(campaign.id, [])
+        roots_serialized.append(data)
+    return roots_serialized
+
+
+@router.post("")
+def create_campaign(payload: CampaignCreate, session: Session = Depends(get_session)):
+    if payload.template_id is None:
+        raise HTTPException(status_code=400, detail="Selecione um template")
+
+    template = _load_template(payload.template_id, session)
+    subject = (payload.subject or template.subject or "").strip()
+    if not payload.is_draft and not subject:
+        raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+
+    if payload.is_draft:
+        recipients = []
+        nodes = []
+    else:
+        if not payload.node_ids:
+            raise HTTPException(status_code=400, detail="Selecione pelo menos uma VPS")
+        recipients = [item.strip() for item in payload.recipients if item and item.strip()]
+        if not recipients:
+            raise HTTPException(status_code=400, detail="Lista de destinatarios vazia")
+        nodes = _load_nodes(payload.node_ids, session)
+
+    campaign = Campaign(
+        name=payload.name.strip() or "Campanha",
+        parent_campaign_id=payload.parent_campaign_id,
+        template_id=template.id,
+        subject=subject,
+        cta_url=(payload.cta_url or "").strip() or None,
+        rate_per_hour=payload.rate_per_hour,
+        total_recipients=len(recipients),
+        is_test=False,
+        is_draft=payload.is_draft,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    if not payload.is_draft:
+        for node, node_recipients in zip(nodes, _chunk_recipients(recipients, len(nodes))):
+            if not node_recipients:
+                continue
+            session.add(
+                Task(
+                    node_id=node.id,
+                    campaign_id=campaign.id,
+                    is_test=False,
+                    subject=subject,
+                    body=template.plain_text or "",
+                    html=template.html,
+                    plain_text=template.plain_text,
+                    from_address=node.email_from,
+                    recipients=json.dumps(node_recipients),
+                    rate_per_hour=payload.rate_per_hour,
+                    cta_url=campaign.cta_url,
+                )
+            )
+        session.commit()
+
+    return {"ok": True, "campaign_id": campaign.id, "is_draft": payload.is_draft}
+
+
+@router.put("/{campaign_id}")
+def update_campaign(campaign_id: int, payload: CampaignCreate, session: Session = Depends(get_session)):
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha nao encontrada")
+    if payload.template_id is None:
+        raise HTTPException(status_code=400, detail="Selecione um template")
+
+    template = _load_template(payload.template_id, session)
+    subject = (payload.subject or template.subject or "").strip()
+    if not payload.is_draft and not subject:
+        raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+
+    campaign.name = payload.name.strip() or campaign.name or "Campanha"
+    campaign.parent_campaign_id = payload.parent_campaign_id
+    campaign.template_id = template.id
+    campaign.subject = subject
+    campaign.cta_url = (payload.cta_url or "").strip() or None
+    campaign.rate_per_hour = payload.rate_per_hour
+    campaign.is_draft = payload.is_draft
+    if payload.is_draft:
+        campaign.total_recipients = 0
+
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+    return {"ok": True, "campaign_id": campaign.id, "is_draft": campaign.is_draft}
+
+
+@router.post("/test")
+async def test_campaign(payload: CampaignCreate, session: Session = Depends(get_session)):
+    if not payload.node_ids:
+        raise HTTPException(status_code=400, detail="Selecione pelo menos uma VPS")
+    test_recipient = (payload.test_recipient or "").strip()
+    if not test_recipient:
+        raise HTTPException(status_code=400, detail="Email de teste obrigatorio")
+
+    nodes = _load_nodes(payload.node_ids, session)
+    template = _load_template(payload.template_id, session)
+    subject = (payload.subject or template.subject or "").strip()
+    if not subject:
+        raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+
+    campaign = Campaign(
+        name=(payload.name.strip() or "Teste SMTP") + " [teste]",
+        template_id=template.id,
+        subject=subject,
+        cta_url=(payload.cta_url or "").strip() or None,
+        rate_per_hour=payload.rate_per_hour,
+        test_recipient=test_recipient,
+        total_recipients=len(nodes),
+        is_test=True,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    results = []
+    for node in nodes:
+        task = Task(
+            node_id=node.id,
+            campaign_id=campaign.id,
+            is_test=True,
+            subject=subject,
+            body=template.plain_text or "",
+            html=template.html,
+            plain_text=template.plain_text,
+            from_address=node.email_from,
+            recipients=json.dumps([test_recipient]),
+            rate_per_hour=payload.rate_per_hour,
+            cta_url=campaign.cta_url,
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+
+        try:
+            direct_result = await send_test_email(
+                node,
+                test_recipient,
+                subject=subject,
+                body=template.plain_text or "",
+                html=template.html,
+                cta_url=campaign.cta_url,
+            )
+            task.status = "done" if direct_result.get("success") else "failed"
+            task.sent_count = 1 if direct_result.get("success") else 0
+            task.error_count = 0 if direct_result.get("success") else 1
+            task.task_log = direct_result.get("message", "")
+            task.finished_at = datetime.utcnow()
+            session.add(task)
+            session.commit()
+            results.append({
+                "node_id": node.id,
+                "node_name": node.hostname,
+                "success": direct_result.get("success", False),
+                "message": direct_result.get("message", ""),
+            })
+        except Exception as exc:
+            task.status = "failed"
+            task.sent_count = 0
+            task.error_count = 1
+            task.task_log = str(exc)
+            task.finished_at = datetime.utcnow()
+            session.add(task)
+            session.commit()
+            results.append({
+                "node_id": node.id,
+                "node_name": node.hostname,
+                "success": False,
+                "message": str(exc),
+            })
+
+    return {
+        "ok": True,
+        "campaign_id": campaign.id,
+        "results": results,
+        "node_names": [node.hostname for node in nodes],
+    }
+
+
+# ── Campaign launch (real mass send via shards) ───────────────────────────────
+
+@router.post("/{campaign_id}/launch")
+def launch_campaign(campaign_id: int, payload: dict, session: Session = Depends(get_session)):
+    """Shard the recipient list across selected VPS and start the campaign."""
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    if campaign.status == "running":
+        raise HTTPException(status_code=400, detail="Campanha já está em execução")
+
+    node_ids = payload.get("node_ids", [])
+    list_id = payload.get("list_id") or campaign.list_id
+    chunk_size = int(payload.get("chunk_size") or campaign.chunk_size or 2000)
+
+    if not node_ids:
+        raise HTTPException(status_code=400, detail="Selecione pelo menos uma VPS")
+    if not list_id:
+        raise HTTPException(status_code=400, detail="Selecione uma lista de destinatários")
+
+    nodes = _load_nodes(node_ids, session)
+    rl = session.get(RecipientList, list_id)
+    if not rl:
+        raise HTTPException(status_code=404, detail="Lista não encontrada")
+
+    total_active = rl.active_count or rl.total_count
+    if total_active == 0:
+        raise HTTPException(status_code=400, detail="Lista sem destinatários ativos")
+
+    # Delete any existing shards for this campaign (re-launch scenario)
+    with engine.connect() as conn:
+        conn.execute(text(f"DELETE FROM campaignshard WHERE campaign_id = {campaign_id}"))
+        conn.commit()
+
+    n = len(nodes)
+    per_vps = math.ceil(total_active / n)
+
+    shards = []
+    for i, node in enumerate(nodes):
+        start = i * per_vps
+        end = min(start + per_vps, total_active)
+        if start >= total_active:
+            break
+        shard = CampaignShard(
+            campaign_id=campaign_id,
+            node_id=node.id,
+            list_id=list_id,
+            offset_start=start,
+            offset_end=end,
+            chunk_size=chunk_size,
+            next_row_index=start,
+            status="pending",
+        )
+        session.add(shard)
+        shards.append(shard)
+
+    campaign.list_id = list_id
+    campaign.chunk_size = chunk_size
+    campaign.status = "running"
+    campaign.total_recipients = total_active
+    campaign.is_draft = False
+    campaign.started_at = datetime.utcnow()
+    session.add(campaign)
+    session.commit()
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "shards": len(shards),
+        "total_recipients": total_active,
+        "chunk_size": chunk_size,
+        "per_vps": per_vps,
+    }
+
+
+@router.get("/{campaign_id}/progress")
+def campaign_progress(campaign_id: int, session: Session = Depends(get_session)):
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    shards = session.exec(
+        select(CampaignShard).where(CampaignShard.campaign_id == campaign_id)
+    ).all()
+
+    if not shards:
+        # Fall back to task-based progress (test/legacy campaigns)
+        tasks = session.exec(select(Task).where(Task.campaign_id == campaign_id)).all()
+        total = campaign.total_recipients or sum(len(json.loads(t.recipients or "[]")) for t in tasks)
+        sent = sum(t.sent_count for t in tasks)
+        errors = sum(t.error_count for t in tasks)
+        return {
+            "type": "task",
+            "status": campaign.status,
+            "total": total,
+            "sent": sent,
+            "errors": errors,
+            "pct": round(sent / total * 100, 1) if total else 0,
+            "shards": [],
+        }
+
+    node_ids = [s.node_id for s in shards]
+    nodes_by_id = {n.id: n for n in session.exec(select(Node).where(Node.id.in_(node_ids))).all()}
+
+    total = sum(s.offset_end - s.offset_start for s in shards)
+    sent = sum(s.sent_count for s in shards)
+    errors = sum(s.error_count for s in shards)
+
+    # Refresh campaign status based on shards
+    all_done = all(s.status == "done" for s in shards)
+    any_running = any(s.status in ("running", "pending") for s in shards)
+    if all_done and campaign.status != "done":
+        campaign.status = "done"
+        session.add(campaign)
+        session.commit()
+
+    return {
+        "type": "sharded",
+        "status": campaign.status,
+        "total": total,
+        "sent": sent,
+        "errors": errors,
+        "pct": round(sent / total * 100, 1) if total else 0,
+        "shards": [
+            {
+                "shard_id": s.id,
+                "node_id": s.node_id,
+                "node_name": nodes_by_id.get(s.node_id, Node(hostname=f"Node {s.node_id}")).hostname,
+                "status": s.status,
+                "sent": s.sent_count,
+                "errors": s.error_count,
+                "total": s.offset_end - s.offset_start,
+                "pct": round(s.sent_count / (s.offset_end - s.offset_start) * 100, 1) if (s.offset_end - s.offset_start) else 0,
+                "current_chunk": (s.next_row_index - s.offset_start) // s.chunk_size if s.chunk_size else 0,
+                "total_chunks": math.ceil((s.offset_end - s.offset_start) / s.chunk_size) if s.chunk_size else 0,
+            }
+            for s in shards
+        ],
+    }
+
+
+@router.post("/{campaign_id}/pause")
+def pause_campaign(campaign_id: int, session: Session = Depends(get_session)):
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    shards = session.exec(
+        select(CampaignShard).where(
+            CampaignShard.campaign_id == campaign_id,
+            CampaignShard.status.in_(["pending", "running"]),
+        )
+    ).all()
+    for shard in shards:
+        shard.status = "paused"
+        session.add(shard)
+    campaign.status = "paused"
+    session.add(campaign)
+    session.commit()
+    return {"ok": True, "paused_shards": len(shards)}
+
+
+@router.post("/{campaign_id}/resume")
+def resume_campaign(campaign_id: int, session: Session = Depends(get_session)):
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    shards = session.exec(
+        select(CampaignShard).where(
+            CampaignShard.campaign_id == campaign_id,
+            CampaignShard.status == "paused",
+        )
+    ).all()
+    for shard in shards:
+        shard.status = "pending"
+        session.add(shard)
+    campaign.status = "running"
+    session.add(campaign)
+    session.commit()
+    return {"ok": True, "resumed_shards": len(shards)}
+
+
+@router.delete("/{campaign_id}")
+def delete_campaign(campaign_id: int, session: Session = Depends(get_session)):
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    with engine.connect() as conn:
+        conn.execute(text(f"DELETE FROM campaignshard WHERE campaign_id = {campaign_id}"))
+        conn.execute(text(f"DELETE FROM task WHERE campaign_id = {campaign_id}"))
+        conn.commit()
+    session.delete(campaign)
+    session.commit()
+    return {"ok": True}
+
+
+@router.get("/active")
+def list_active_campaigns(session: Session = Depends(get_session)):
+    """Return all running/paused campaigns with full shard progress — used by the monitor."""
+    campaigns = session.exec(
+        select(Campaign).where(Campaign.status.in_(["running", "paused"]))
+    ).all()
+
+    if not campaigns:
+        return []
+
+    result = []
+    for campaign in campaigns:
+        shards = session.exec(
+            select(CampaignShard).where(CampaignShard.campaign_id == campaign.id)
+        ).all()
+
+        node_ids = [s.node_id for s in shards]
+        nodes_by_id = {n.id: n for n in session.exec(select(Node).where(Node.id.in_(node_ids))).all()} if node_ids else {}
+
+        total = sum(s.offset_end - s.offset_start for s in shards) or campaign.total_recipients
+        sent = sum(s.sent_count for s in shards)
+        errors = sum(s.error_count for s in shards)
+        pct = round(sent / total * 100, 1) if total else 0
+
+        # Detect if all shards are done
+        if shards and all(s.status == "done" for s in shards) and campaign.status != "done":
+            campaign.status = "done"
+            session.add(campaign)
+            session.commit()
+            continue  # skip — no longer active
+
+        shard_data = [
+            {
+                "shard_id": s.id,
+                "node_id": s.node_id,
+                "node_name": nodes_by_id.get(s.node_id, Node(hostname=f"Node {s.node_id}")).hostname,
+                "status": s.status,
+                "sent": s.sent_count,
+                "errors": s.error_count,
+                "total": s.offset_end - s.offset_start,
+                "pct": round(s.sent_count / (s.offset_end - s.offset_start) * 100, 1) if (s.offset_end - s.offset_start) else 0,
+                "next_row_index": s.next_row_index,
+                "offset_start": s.offset_start,
+                "offset_end": s.offset_end,
+                "chunk_size": s.chunk_size,
+                "current_chunk": (s.next_row_index - s.offset_start) // s.chunk_size if s.chunk_size else 0,
+                "total_chunks": math.ceil((s.offset_end - s.offset_start) / s.chunk_size) if s.chunk_size else 0,
+            }
+            for s in shards
+        ]
+
+        result.append({
+            "id": campaign.id,
+            "name": campaign.name,
+            "subject": campaign.subject,
+            "status": campaign.status,
+            "rate_per_hour": campaign.rate_per_hour,
+            "chunk_size": campaign.chunk_size,
+            "total": total,
+            "sent": sent,
+            "errors": errors,
+            "pct": pct,
+            "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
+            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+            "shards": shard_data,
+        })
+
+    return result
+
