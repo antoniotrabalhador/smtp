@@ -65,7 +65,11 @@ export default function NodeRow({ node, onChanged }) {
   const [sendingTest, setSendingTest] = useState(false)
   const [testEmailResult, setTestEmailResult] = useState(null)
 
-  const [panelUrl, setPanelUrl] = useState("http://localhost:8000")
+  const defaultPanelUrl =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "http://localhost:8000"
+  const [panelUrl, setPanelUrl] = useState(node.agent_panel_url || defaultPanelUrl)
   const [installingAgent, setInstallingAgent] = useState(false)
   const [agentLog, setAgentLog] = useState([])
   const [agentResult, setAgentResult] = useState(null)
@@ -91,6 +95,18 @@ export default function NodeRow({ node, onChanged }) {
   useEffect(() => {
     setCloudflareDomainId(node.cloudflare_domain_id || "")
   }, [node.cloudflare_domain_id])
+
+  useEffect(() => {
+    if (node.agent_panel_url) {
+      setPanelUrl(node.agent_panel_url)
+      return
+    }
+    if (typeof window !== "undefined" && window.location?.origin) {
+      setPanelUrl(window.location.origin)
+    } else {
+      setPanelUrl("http://localhost:8000")
+    }
+  }, [node.agent_panel_url, node.id])
 
   async function handleSaveDomain() {
     setSavingDomain(true)
