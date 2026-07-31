@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -37,9 +38,15 @@ func jitteredDelay(base time.Duration) time.Duration {
 	return result
 }
 
-// SendBatch sends emails to all recipients via the local Postfix (localhost:25).
-// It respects ratePerHour by spacing sends with jitter; 0 means no limit.
-func SendBatch(task *Task) []SendResult {
+// SendBatch envia e-mails a todos os destinatários via Postfix local (127.0.0.1:25).
+//
+// Usa UMA conexão TCP persistente para o lote inteiro (SMTP multi-transação):
+// cada mensagem começa com MAIL FROM e termina com o fechar do DATA writer,
+// sem fechar a conexão TCP. O SMTP RFC permite múltiplas transações por sessão.
+//
+// Observação de spam: não há impacto pois a conexão é com o Postfix LOCAL.
+// É o Postfix quem gerencia as conexões externas (e faz a entrega com DKIM, SPF etc.)
+func SendBatch(ctx context.Context, task *Task) []SendResult {
 	results := make([]SendResult, 0, len(task.Recipients))
 
 	var baseDelay time.Duration
@@ -50,27 +57,67 @@ func SendBatch(task *Task) []SendResult {
 	start := time.Now()
 	total := len(task.Recipients)
 
+	// Tenta abrir uma única conexão persistente para o lote inteiro.
+	// Em caso de falha usa sendOne (1 conexão por e-mail) como fallback.
+	conn, err := openSMTPConn()
+	if err != nil {
+		log.Printf("[task %d] aviso: conexão persistente falhou (%v) — modo individual", task.ID, err)
+	}
+	if conn != nil {
+		defer func() { _ = conn.Quit() }()
+	}
+
 	for i, to := range task.Recipients {
-		err := sendOne(task, to)
+		// Verifica cancelamento antes de cada envio
+		select {
+		case <-ctx.Done():
+			log.Printf("[task %d] cancelado após %d/%d envios — reportando parcial", task.ID, i, total)
+			return results
+		default:
+		}
+
 		result := SendResult{To: to}
+
+		if conn != nil {
+			err = sendOnePersistent(conn, task, to)
+		} else {
+			err = sendOne(task, to) // fallback: 1 conexão por e-mail
+		}
+
 		if err != nil {
 			result.Error = err.Error()
+			// Erro de conexão (EOF, broken pipe, etc.) → tenta reconectar
+			if conn != nil && isConnError(err) {
+				log.Printf("[task %d] conexão SMTP perdida, reconectando...", task.ID)
+				_ = conn.Close()
+				conn, err = openSMTPConn()
+				if err != nil {
+					log.Printf("[task %d] reconexão falhou: %v — modo individual", task.ID, err)
+					conn = nil
+				}
+			}
 		}
 		results = append(results, result)
 
-		// Progress log every 100 sends
+		// Log de progresso a cada 100 envios
 		if (i+1)%100 == 0 || i+1 == total {
 			elapsed := time.Since(start)
 			realRate := 0.0
 			if elapsed > 0 {
 				realRate = float64(i+1) / elapsed.Hours()
 			}
-			log.Printf("[task %d] progress %d/%d (%.0f/h real, %d/h target)",
+			log.Printf("[task %d] progresso %d/%d (%.0f/h real, %d/h alvo)",
 				task.ID, i+1, total, realRate, task.RatePerHour)
 		}
 
 		if baseDelay > 0 && i+1 < total {
-			time.Sleep(jitteredDelay(baseDelay))
+			// Usa select para que o delay também seja interrompível pelo ctx
+			select {
+			case <-ctx.Done():
+				log.Printf("[task %d] cancelado durante espera após %d/%d envios", task.ID, i+1, total)
+				return results
+			case <-time.After(jitteredDelay(baseDelay)):
+			}
 		}
 	}
 
@@ -80,6 +127,62 @@ func SendBatch(task *Task) []SendResult {
 func sendOne(task *Task, to string) error {
 	msg := buildMessage(task, to)
 	return sendToLocalPostfix(task.FromAddress, []string{to}, []byte(msg))
+}
+
+// openSMTPConn abre e inicializa uma conexão SMTP com o Postfix local.
+func openSMTPConn() (*smtp.Client, error) {
+	c, err := smtp.Dial("127.0.0.1:25")
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Hello("localhost"); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// sendOnePersistent envia uma mensagem em uma conexão SMTP já aberta e inicializada.
+// Após o DATA ser aceito, a conexão permanece aberta para a próxima transação.
+// Em caso de erro no RCPT (destinatário inválido), faz RSET para limpar o estado
+// da transação sem precisar reconectar.
+func sendOnePersistent(c *smtp.Client, task *Task, to string) error {
+	msg := buildMessage(task, to)
+
+	if err := c.Mail(task.FromAddress); err != nil {
+		return err
+	}
+	if err := c.Rcpt(to); err != nil {
+		// RCPT falhou (ex: domínio inexistente) — reseta a transação SMTP
+		// para que a próxima mensagem parta de um estado limpo
+		_ = c.Reset()
+		return err
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(msg)); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+// isConnError retorna true se o erro indica que a conexão TCP foi perdida.
+// Nesses casos, reconectar é a ação correta. Erros SMTP normais (5xx) não
+// são erros de conexão e não precisam de reconexão.
+func isConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "use of closed network connection")
 }
 
 func sendToLocalPostfix(from string, to []string, msg []byte) error {
@@ -129,12 +232,16 @@ func extractDomain(email string) string {
 	return "localhost"
 }
 
+// generateProtocol gera uma string de 10 dígitos embaralhados aleatoriamente.
+// Usada como variável {{protocol}} nos templates para adicionar entropia ao conteúdo
+// e dificultar detecção de padrões por filtros de spam baseados em hash.
+// Lê todos os bytes aleatórios em UMA única chamada ao invés de 9 alocações.
 func generateProtocol() string {
 	digits := []byte("0123456789")
+	b := make([]byte, len(digits)) // 1 alocação para todos os bytes aleatórios
+	rand.Read(b)
 	for i := len(digits) - 1; i > 0; i-- {
-		b := make([]byte, 1)
-		rand.Read(b)
-		j := int(b[0]) % (i + 1)
+		j := int(b[i]) % (i + 1) // Fisher-Yates com bytes pré-lidos
 		digits[i], digits[j] = digits[j], digits[i]
 	}
 	return string(digits)
@@ -148,6 +255,11 @@ func replaceTags(s, to string, task *Task, protocol string) string {
 	s = strings.ReplaceAll(s, "{{subject}}", task.Subject)
 	if task.CtaURL != "" {
 		s = strings.ReplaceAll(s, "{{cta_url}}", task.CtaURL)
+	}
+	if task.UnsubscribeURL != "" {
+		// A URL de unsubscribe pode conter {{email}} — resolve antes de substituir
+		unsubResolved := strings.ReplaceAll(task.UnsubscribeURL, "{{email}}", to)
+		s = strings.ReplaceAll(s, "{{unsubscribe_url}}", unsubResolved)
 	}
 	return s
 }

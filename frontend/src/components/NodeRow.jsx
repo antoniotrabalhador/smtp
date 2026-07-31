@@ -65,11 +65,10 @@ export default function NodeRow({ node, onChanged }) {
   const [sendingTest, setSendingTest] = useState(false)
   const [testEmailResult, setTestEmailResult] = useState(null)
 
-  const defaultPanelUrl =
-    typeof window !== "undefined" && window.location?.origin
-      ? window.location.origin
-      : "http://localhost:8000"
-  const [panelUrl, setPanelUrl] = useState(node.agent_panel_url || defaultPanelUrl)
+  // Não pré-preencher com window.location.origin pois em dev esse valor
+  // seria a URL do túnel Cloudflare (efêmera) ou porta do Vite (5173, incorreta).
+  // Só usar o valor salvo em banco (agent_panel_url); caso contrário, deixar vazio.
+  const [panelUrl, setPanelUrl] = useState(node.agent_panel_url || "")
   const [installingAgent, setInstallingAgent] = useState(false)
   const [agentLog, setAgentLog] = useState([])
   const [agentResult, setAgentResult] = useState(null)
@@ -97,14 +96,10 @@ export default function NodeRow({ node, onChanged }) {
   }, [node.cloudflare_domain_id])
 
   useEffect(() => {
+    // Só sincronizar quando vier um valor salvo do banco.
+    // Não auto-preencher com a origem do browser (pode ser túnel dev ou porta errada).
     if (node.agent_panel_url) {
       setPanelUrl(node.agent_panel_url)
-      return
-    }
-    if (typeof window !== "undefined" && window.location?.origin) {
-      setPanelUrl(window.location.origin)
-    } else {
-      setPanelUrl("http://localhost:8000")
     }
   }, [node.agent_panel_url, node.id])
 
@@ -717,34 +712,40 @@ export default function NodeRow({ node, onChanged }) {
             <div style={{ marginTop: 20, borderTop: "1px solid #e0e0e0", paddingTop: 14 }}>
               <span className="node-section-label" style={{ display: "block", marginBottom: 8 }}>Agente</span>
               <div style={{ fontSize: "0.82em", color: "#666", marginBottom: 6 }}>URL pública do painel:</div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-                <input
-                  value={panelUrl}
-                  onChange={(e) => setPanelUrl(e.target.value)}
-                  placeholder="http://IP-DO-PAINEL:8000"
-                  style={{ flex: 1, fontSize: "0.85em" }}
-                />
-                <button
-                  onClick={handleInstallAgent}
-                  disabled={installingAgent || !panelUrl.trim()}
-                >
-                  {installingAgent ? "Instalando..." : "⚙ Instalar Agente"}
-                </button>
-                <button
-                  onClick={handleRestartAgent}
-                  disabled={installingAgent || !panelUrl.trim() || !node.agent_token}
-                  title={!node.agent_token ? "Instale o agente primeiro" : ""}
-                >
-                  {installingAgent ? "Reiniciando..." : "↻ Reiniciar"}
-                </button>
-                <button
-                  onClick={handleViewLogs}
-                  disabled={loadingLogs || !node.agent_token}
-                  title={!node.agent_token ? "Instale o agente primeiro" : ""}
-                  style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d" }}
-                >
-                  {loadingLogs ? "⟳ Carregando..." : "📋 Ver Logs"}
-                </button>
+              <div style={{ display: "flex", gap: 6, marginBottom: 8, flexDirection: "column" }}>
+                <div style={{ fontSize: "0.78em", color: "#8b949e", marginBottom: 2 }}>
+                  ⚠️ Informe a URL pública e permanente do painel (ex: <code>https://painel.seudominio.com</code> ou <code>http://IP:8000</code>).
+                  Não use URLs de túnel temporárias (trycloudflare, ngrok etc).
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={panelUrl}
+                    onChange={(e) => setPanelUrl(e.target.value)}
+                    placeholder="https://painel.seudominio.com  (URL permanente, não túnel)"
+                    style={{ flex: 1, fontSize: "0.85em", borderColor: !panelUrl.trim() ? "#d29922" : undefined }}
+                  />
+                  <button
+                    onClick={handleInstallAgent}
+                    disabled={installingAgent || !panelUrl.trim()}
+                  >
+                    {installingAgent ? "Instalando..." : "⚙ Instalar Agente"}
+                  </button>
+                  <button
+                    onClick={handleRestartAgent}
+                    disabled={installingAgent || !panelUrl.trim() || !node.agent_token}
+                    title={!node.agent_token ? "Instale o agente primeiro" : ""}
+                  >
+                    {installingAgent ? "Reiniciando..." : "↻ Reiniciar"}
+                  </button>
+                  <button
+                    onClick={handleViewLogs}
+                    disabled={loadingLogs || !node.agent_token}
+                    title={!node.agent_token ? "Instale o agente primeiro" : ""}
+                    style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d" }}
+                  >
+                    {loadingLogs ? "⟳ Carregando..." : "📋 Ver Logs"}
+                  </button>
+                </div>
               </div>
               {node.agent_status && !agentResult && (
                 <div className="node-card-meta">

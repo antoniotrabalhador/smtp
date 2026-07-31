@@ -37,8 +37,11 @@ SRC_DIR="$(dirname "$SCRIPT_DIR")"
 
 if [[ ! -f "$PANEL_ENV" ]]; then
     mkdir -p "$DB_DIR" "$LOG_DIR"
-    printf '%s
-' '# CORS: informe o domínio público aqui depois, ex: https://painel.exemplo.com' 'CORS_ORIGINS=http://localhost:5173' "DATABASE_URL=sqlite:///$DB_DIR/panel.db" > "$PANEL_ENV"
+    cat > "$PANEL_ENV" <<EOF
+# CORS: informe o domínio público aqui depois, ex: https://painel.exemplo.com
+CORS_ORIGINS=http://localhost:5173
+DATABASE_URL=sqlite:///$DB_DIR/panel.db
+EOF
     chown "$PANEL_USER:$PANEL_USER" "$PANEL_ENV"
 fi
 
@@ -54,6 +57,13 @@ info "Rebuilding frontend..."
 cd "$PANEL_DIR/frontend"
 npm install --silent
 npm run build --silent
+ok "Frontend buildado"
+
+# Recarrega o nginx para servir os novos assets imediatamente
+if systemctl is-active nginx > /dev/null 2>&1; then
+    nginx -t -q && systemctl reload nginx
+    ok "Nginx recarregado"
+fi
 
 chown -R "$PANEL_USER:$PANEL_USER" "$PANEL_DIR"
 

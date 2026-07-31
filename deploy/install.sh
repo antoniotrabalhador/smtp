@@ -291,11 +291,14 @@ if [[ -n "$PANEL_DOMAIN" ]]; then
         ok "Registros DNS enviados para a Cloudflare"
     fi
 
-    sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:5173,https://$PANEL_DOMAIN|" "$PANEL_DIR/panel.env"
+    # Atualiza o CORS para o domínio real (sem localhost:5173 em produção)
+    sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=https://$PANEL_DOMAIN|" "$PANEL_DIR/panel.env"
     PANEL_URL="https://$PANEL_DOMAIN"
 else
-    sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:5173|" "$PANEL_DIR/panel.env"
-    PANEL_URL="http://$(hostname -I | awk '{print $1}')"
+    VPS_IP_CORS=$(hostname -I | awk '{print $1}')
+    # Sem domínio: usa o IP da VPS (acesso direto via HTTP)
+    sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://$VPS_IP_CORS|" "$PANEL_DIR/panel.env"
+    PANEL_URL="http://$VPS_IP_CORS"
 fi
 
 systemctl restart smtp-panel
