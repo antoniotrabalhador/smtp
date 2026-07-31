@@ -145,6 +145,7 @@ async def stream_bootstrap(node: Node):
     log_lines = []
 
     STEP_LABELS = {
+        "cleanup": "Limpando instalações antigas (Postfix/OpenDKIM)",
         "preseed": "Pré-configurando Postfix",
         "apt-update": "Atualizando pacotes",
         "install": "Instalando Postfix + OpenDKIM + Certbot",
@@ -176,6 +177,12 @@ async def stream_bootstrap(node: Node):
                 return result
 
             critical_steps = [
+                (
+                    "cleanup",
+                    "systemctl stop postfix opendkim >/dev/null 2>&1 || true; "
+                    "apt-get purge -y postfix opendkim opendkim-tools >/dev/null 2>&1 || true; "
+                    "rm -rf /etc/postfix /etc/opendkim /etc/opendkim.conf /etc/default/opendkim"
+                ),
                 (
                     "preseed",
                     f"echo 'postfix postfix/main_mailer_type select Internet Site' | debconf-set-selections && "
