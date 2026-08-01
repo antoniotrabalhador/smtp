@@ -57,7 +57,7 @@ func main() {
 
 	// ── Loop de polling de tarefas ───────────────────────────────────────────
 	// isBusy impede que um segundo task seja pego enquanto um já está rodando.
-	var isBusy atomic.Bool
+	var isBusy int32
 	// wg permite aguardar o término da tarefa atual antes de encerrar.
 	var wg sync.WaitGroup
 
@@ -75,7 +75,7 @@ func main() {
 
 		case <-pollTicker.C:
 			// Se já há uma tarefa rodando, não pega outra
-			if isBusy.Load() {
+			if atomic.LoadInt32(&isBusy) == 1 {
 				continue
 			}
 
@@ -91,11 +91,11 @@ func main() {
 			log.Printf("[task %d] %d destinatários rate=%d/h assunto=%q",
 				task.ID, len(task.Recipients), task.RatePerHour, task.Subject)
 
-			isBusy.Store(true)
+			atomic.StoreInt32(&isBusy, 1)
 			wg.Add(1)
 			go func(t *Task) {
 				defer wg.Done()
-				defer isBusy.Store(false)
+				defer atomic.StoreInt32(&isBusy, 0)
 
 				results := SendBatch(ctx, t)
 				report := buildReport(results)
