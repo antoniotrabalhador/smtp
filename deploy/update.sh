@@ -48,6 +48,7 @@ fi
 info "Sincronizando arquivos..."
 rsync -a --exclude='**/.venv' --exclude='**/node_modules' --exclude='**/__pycache__' --exclude='**/dist' "$SRC_DIR/backend" "$PANEL_DIR/"
 rsync -a --exclude='**/node_modules' --exclude='**/dist' "$SRC_DIR/frontend" "$PANEL_DIR/"
+rsync -a "$SRC_DIR/agent" "$PANEL_DIR/"
 
 "$VENV_DIR/bin/pip" install --quiet -r "$PANEL_DIR/backend/requirements.txt"
 

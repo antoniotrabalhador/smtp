@@ -139,6 +139,7 @@ mkdir -p "$PANEL_DIR" "$DB_DIR" "$LOG_DIR"
 rm -rf "$PANEL_DIR/backend" "$PANEL_DIR/frontend"
 rsync -a --exclude='**/.venv' --exclude='**/node_modules' --exclude='**/__pycache__' --exclude='**/dist' "$SRC_DIR/backend" "$PANEL_DIR/"
 rsync -a --exclude='**/node_modules' --exclude='**/dist' "$SRC_DIR/frontend" "$PANEL_DIR/"
+rsync -a "$SRC_DIR/agent" "$PANEL_DIR/"
 ok "Arquivos copiados"
 
 info "Instalando dependências do frontend..."

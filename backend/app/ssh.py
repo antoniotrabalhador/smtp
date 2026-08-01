@@ -387,10 +387,6 @@ async def stream_install_agent(node: Node, token: str, panel_url: str):
     def event(type: str, label: str, **kwargs) -> str:
         return _json.dumps({"type": type, "label": label, **kwargs}) + "\n"
 
-    agent_dir = os.path.abspath(AGENT_SRC_DIR)
-    go_files = [f for f in os.listdir(agent_dir) if f.endswith(".go")]
-    go_mod = os.path.join(agent_dir, "go.mod")
-
     remote_dir = "/opt/smtpagent"
     binary_path = "/usr/local/bin/smtpagent"
     service_name = "smtpagent"
@@ -414,6 +410,15 @@ WantedBy=multi-user.target
 """
 
     try:
+        agent_dir = os.path.abspath(AGENT_SRC_DIR)
+        if not os.path.isdir(agent_dir):
+            yield event("error", "agent-src", message="Pasta 'agent' não encontrada no painel. Atualize a VPS do painel.")
+            yield event("done", "install-agent", success=False, message="Código do agente ausente.")
+            return
+
+        go_files = [f for f in os.listdir(agent_dir) if f.endswith(".go")]
+        go_mod = os.path.join(agent_dir, "go.mod")
+
         async with asyncssh.connect(**_connect_kwargs(node)) as conn:
 
             async def run(label: str, cmd: str):
