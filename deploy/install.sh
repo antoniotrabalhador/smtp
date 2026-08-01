@@ -207,6 +207,15 @@ printf '%s\n' \
     '        proxy_read_timeout 120s;' \
     '    }' \
     '' \
+    '    location /unsubscribe {' \
+    '        proxy_pass         http://127.0.0.1:8000;' \
+    '        proxy_set_header   Host $host;' \
+    '        proxy_set_header   X-Real-IP $remote_addr;' \
+    '        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;' \
+    '        proxy_set_header   X-Forwarded-Proto $scheme;' \
+    '        proxy_read_timeout 120s;' \
+    '    }' \
+    '' \
     '    location / {' \
     "        root $DIST_DIR;" \
     '        index index.html;' \
@@ -259,6 +268,15 @@ if [[ -n "$PANEL_DOMAIN" ]]; then
         "    server_name $PANEL_DOMAIN;" \
         '' \
         '    location /api/ {' \
+        '        proxy_pass         http://127.0.0.1:8000;' \
+        '        proxy_set_header   Host $host;' \
+        '        proxy_set_header   X-Real-IP $remote_addr;' \
+        '        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;' \
+        '        proxy_set_header   X-Forwarded-Proto $scheme;' \
+        '        proxy_read_timeout 120s;' \
+        '    }' \
+        '' \
+        '    location /unsubscribe {' \
         '        proxy_pass         http://127.0.0.1:8000;' \
         '        proxy_set_header   Host $host;' \
         '        proxy_set_header   X-Real-IP $remote_addr;' \
