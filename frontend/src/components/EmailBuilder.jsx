@@ -5,6 +5,8 @@ const SMART_TAGS = [
   { tag: "{{email}}", desc: "Email completo do destinatario", sample: "joao@gmail.com" },
   { tag: "{{domain}}", desc: "Dominio do email (ex: gmail.com)", sample: "gmail.com" },
   { tag: "{{protocol}}", desc: "10 digitos unicos aleatorios por destinatario", sample: "3847162905" },
+  { tag: "{{data}}", desc: "Data atual do envio (ex: 02/08/2026 - Fuso Brasil)", sample: "02/08/2026" },
+  { tag: "{{hora}}", desc: "Hora atual do envio (ex: 16:50:32 - Fuso Brasil)", sample: "16:50:32" },
   { tag: "{{cta_url}}", desc: "Link do botao de acao (definido na campanha)", sample: "https://exemplo.com" },
   { tag: "{{unsubscribe_url}}", desc: "Link de cancelamento (automatico por VPS)", sample: "https://seudominio.com/unsubscribe?email=joao@gmail.com" },
 ]
@@ -128,54 +130,96 @@ function EmailEditor({ template, onSave, onBack }) {
 
       {error && <div style={{ background: "#3d2424", color: "#f85149", padding: "8px 12px", borderRadius: 4, marginBottom: 12, fontSize: "0.85em" }}>{error}</div>}
 
-      <input
-        value={subject}
-        onChange={e => setSubject(e.target.value)}
-        placeholder="Assunto — ex: Oferta para {{email}} protocolo {{protocol}}"
-        style={{ width: "100%", padding: "8px 10px", fontSize: "0.9em", borderRadius: 4, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9", marginBottom: 12 }}
-      />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 290px", gap: 16, alignItems: "start" }}>
+        {/* Coluna Esquerda: Editor / Preview */}
+        <div>
+          <input
+            value={subject}
+            onChange={e => setSubject(e.target.value)}
+            placeholder="Assunto — ex: Oferta para {{email}} gerada em {{data}}"
+            style={{ width: "100%", padding: "8px 10px", fontSize: "0.9em", borderRadius: 4, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9", marginBottom: 12 }}
+          />
 
-      <div style={{ marginBottom: 12, background: "#161b22", border: "1px solid #30363d", borderRadius: 6, padding: "8px 12px", display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-        <span style={{ fontSize: "0.75em", color: "#6e7681", marginRight: 4 }}>Tags:</span>
-        {SMART_TAGS.map(({ tag, desc }) => (
-          <button key={tag} onClick={() => copyTag(tag)} title={desc} style={{ padding: "2px 9px", fontSize: "0.78em", borderRadius: 4, border: "1px solid #30363d", cursor: "pointer", background: copiedTag === tag ? "#238636" : "#21262d", color: copiedTag === tag ? "white" : "#79c0ff", fontFamily: "monospace" }}>
-            {copiedTag === tag ? "copiado" : tag}
-          </button>
-        ))}
-      </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+            {["preview", "code"].map(m => (
+              <button key={m} onClick={() => setViewMode(m)} style={{ padding: "5px 14px", fontSize: "0.82em", borderRadius: 4, border: "1px solid #30363d", cursor: "pointer", background: viewMode === m ? "#1f6feb" : "transparent", color: viewMode === m ? "white" : "#8b949e" }}>
+                {m === "preview" ? "Preview Visual" : "Código HTML"}
+              </button>
+            ))}
+            <label style={{ marginLeft: "auto", fontSize: "0.8em", color: "#8b949e", display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+              <input type="checkbox" checked={injectUnsub} onChange={e => setInjectUnsub(e.target.checked)} />
+              Auto-injetar footer unsubscribe
+            </label>
+          </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-        {["preview", "code"].map(m => (
-          <button key={m} onClick={() => setViewMode(m)} style={{ padding: "5px 14px", fontSize: "0.82em", borderRadius: 4, border: "1px solid #30363d", cursor: "pointer", background: viewMode === m ? "#1f6feb" : "transparent", color: viewMode === m ? "white" : "#8b949e" }}>
-            {m === "preview" ? "Preview" : "HTML"}
-          </button>
-        ))}
-        <label style={{ marginLeft: "auto", fontSize: "0.8em", color: "#8b949e", display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
-          <input type="checkbox" checked={injectUnsub} onChange={e => setInjectUnsub(e.target.checked)} />
-          Auto-injetar footer unsubscribe
-        </label>
-      </div>
+          {viewMode === "preview" ? (
+            <div style={{ background: "#fff", borderRadius: 4, border: "1px solid #30363d", overflow: "hidden", marginBottom: 12 }}>
+              <iframe title="preview" srcDoc={getPreviewHtml()} sandbox="" style={{ width: "100%", height: "480px", border: "none" }} />
+            </div>
+          ) : (
+            <textarea
+              value={htmlCode}
+              onChange={e => setHtmlCode(e.target.value)}
+              placeholder="Cole o código HTML do seu e-mail aqui..."
+              style={{ width: "100%", height: "480px", marginBottom: 12, background: "#0d1117", color: "#79c0ff", padding: 10, borderRadius: 4, border: "1px solid #30363d", fontFamily: "monospace", fontSize: "0.78em", lineHeight: 1.5, resize: "vertical" }}
+            />
+          )}
 
-      {viewMode === "preview" ? (
-        <div style={{ background: "#fff", borderRadius: 4, border: "1px solid #30363d", overflow: "hidden", marginBottom: 12 }}>
-          <iframe title="preview" srcDoc={getPreviewHtml()} sandbox="" style={{ width: "100%", height: "400px", border: "none" }} />
+          {template?.id && (
+            <textarea
+              value={pureText}
+              onChange={e => setPureText(e.target.value)}
+              placeholder="Texto puro (fallback para clientes sem HTML)..."
+              style={{ width: "100%", height: "80px", padding: 8, fontSize: "0.82em", fontFamily: "monospace", borderRadius: 4, border: "1px solid #30363d", background: "#0d1117", color: "#8b949e", resize: "vertical", marginTop: 8 }}
+            />
+          )}
         </div>
-      ) : (
-        <textarea
-          value={htmlCode}
-          onChange={e => setHtmlCode(e.target.value)}
-          style={{ width: "100%", height: "400px", marginBottom: 12, background: "#0d1117", color: "#79c0ff", padding: 10, borderRadius: 4, border: "1px solid #30363d", fontFamily: "monospace", fontSize: "0.78em", lineHeight: 1.5, resize: "vertical" }}
-        />
-      )}
 
-      {template?.id && (
-        <textarea
-          value={pureText}
-          onChange={e => setPureText(e.target.value)}
-          placeholder="Texto puro (fallback para clientes sem HTML)..."
-          style={{ width: "100%", height: "80px", padding: 8, fontSize: "0.82em", fontFamily: "monospace", borderRadius: 4, border: "1px solid #30363d", background: "#0d1117", color: "#8b949e", resize: "vertical", marginTop: 8 }}
-        />
-      )}
+        {/* Coluna Direita: Bloco Lateral de Tags & Exemplos */}
+        <div style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: 6, padding: 12, position: "sticky", top: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, borderBottom: "1px solid #30363d", paddingBottom: 8 }}>
+            <h4 style={{ margin: 0, fontSize: "0.9em", color: "#c9d1d9", display: "flex", alignItems: "center", gap: 6 }}>
+              <span>🏷️</span> Tags & Exemplos
+            </h4>
+            <span style={{ fontSize: "0.72em", color: "#8b949e" }}>Clique para copiar</span>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "560px", overflowY: "auto", paddingRight: 4 }}>
+            {SMART_TAGS.map(({ tag, desc, sample }) => (
+              <div
+                key={tag}
+                onClick={() => copyTag(tag)}
+                style={{
+                  background: "#0d1117",
+                  border: "1px solid #30363d",
+                  borderRadius: 6,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                  transition: "all 0.15s ease",
+                  borderColor: copiedTag === tag ? "#238636" : "#30363d",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <code style={{ fontSize: "0.82em", color: copiedTag === tag ? "#3fb950" : "#79c0ff", fontWeight: "bold" }}>
+                    {tag}
+                  </code>
+                  <span style={{ fontSize: "0.7em", color: copiedTag === tag ? "#3fb950" : "#8b949e" }}>
+                    {copiedTag === tag ? "✓ Copiado" : "copiar"}
+                  </span>
+                </div>
+                <div style={{ fontSize: "0.76em", color: "#8b949e", marginBottom: 4 }}>{desc}</div>
+                <div style={{ fontSize: "0.72em", color: "#e3b341", background: "#1c1917", padding: "3px 6px", borderRadius: 4, fontFamily: "monospace", wordBreak: "break-all" }}>
+                  Exemplo: {sample}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #30363d", fontSize: "0.72em", color: "#8b949e", lineHeight: 1.4 }}>
+            💡 <strong>Dica:</strong> Você também pode usar estas tags dentro da <strong>CTA URL</strong> da campanha para enviar dados à sua Landing Page!
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

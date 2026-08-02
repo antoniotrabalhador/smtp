@@ -37,10 +37,17 @@ function buildHeaderPreview(node, template, toAddress, ctaUrl) {
   const unsubscribeUrl = node.domain
     ? `https://${node.domain}/unsubscribe?email=${recipient}&node_id=${node.id}`
     : "https://dominio/exemplo/unsubscribe?email=destinatario@exemplo.com"
+  const now = new Date()
+  const dataStr = now.toLocaleDateString("pt-BR")
+  const horaStr = now.toLocaleTimeString("pt-BR")
   const subject = (template?.subject || "Assunto da campanha")
     .replaceAll("{{email}}", recipient)
     .replaceAll("{{domain}}", recipient.includes("@") ? recipient.split("@")[1] : domain)
     .replaceAll("{{protocol}}", protocol)
+    .replaceAll("{{data}}", dataStr)
+    .replaceAll("{{date}}", dataStr)
+    .replaceAll("{{hora}}", horaStr)
+    .replaceAll("{{time}}", horaStr)
     .replaceAll("{{cta_url}}", ctaUrl || "https://exemplo.com")
   const hasHtml = Boolean(template?.html)
   const hasText = Boolean(template?.plain_text)
@@ -394,7 +401,7 @@ export default function Campaigns({ nodes }) {
           <input
             value={form.cta_url}
             onChange={(e) => updateField("cta_url", e.target.value)}
-            placeholder="CTA URL (usado em {{cta_url}})"
+            placeholder="CTA URL — ex: https://site.com/form?email={{email}}"
             style={{ padding: 10, borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9" }}
           />
         </div>

@@ -249,18 +249,47 @@ func generateProtocol() string {
 
 func replaceTags(s, to string, task *Task, protocol string) string {
 	domain := extractDomain(to)
+
+	// Fuso horário de Brasília (UTC-3)
+	brtLoc := time.FixedZone("BRT", -3*3600)
+	now := time.Now().In(brtLoc)
+	dataStr := now.Format("02/01/2006")
+	horaStr := now.Format("15:04:05")
+	horaCurtaStr := now.Format("15:04")
+
+	// Resolve tags dentro da CtaURL (ex: https://site.com/?email={{email}}&data={{data}})
+	ctaResolved := task.CtaURL
+	if ctaResolved != "" {
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{email}}", to)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{domain}}", domain)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{protocol}}", protocol)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{subject}}", task.Subject)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{data}}", dataStr)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{date}}", dataStr)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{hora}}", horaStr)
+		ctaResolved = strings.ReplaceAll(ctaResolved, "{{time}}", horaStr)
+	}
+
+	// Resolve tags dentro da UnsubscribeURL
+	unsubResolved := task.UnsubscribeURL
+	if unsubResolved != "" {
+		unsubResolved = strings.ReplaceAll(unsubResolved, "{{email}}", to)
+		unsubResolved = strings.ReplaceAll(unsubResolved, "{{domain}}", domain)
+		unsubResolved = strings.ReplaceAll(unsubResolved, "{{protocol}}", protocol)
+	}
+
+	s = strings.ReplaceAll(s, "{{cta_url}}", ctaResolved)
+	s = strings.ReplaceAll(s, "{{unsubscribe_url}}", unsubResolved)
 	s = strings.ReplaceAll(s, "{{email}}", to)
 	s = strings.ReplaceAll(s, "{{domain}}", domain)
 	s = strings.ReplaceAll(s, "{{protocol}}", protocol)
 	s = strings.ReplaceAll(s, "{{subject}}", task.Subject)
-	if task.CtaURL != "" {
-		s = strings.ReplaceAll(s, "{{cta_url}}", task.CtaURL)
-	}
-	if task.UnsubscribeURL != "" {
-		// A URL de unsubscribe pode conter {{email}} — resolve antes de substituir
-		unsubResolved := strings.ReplaceAll(task.UnsubscribeURL, "{{email}}", to)
-		s = strings.ReplaceAll(s, "{{unsubscribe_url}}", unsubResolved)
-	}
+	s = strings.ReplaceAll(s, "{{data}}", dataStr)
+	s = strings.ReplaceAll(s, "{{date}}", dataStr)
+	s = strings.ReplaceAll(s, "{{hora}}", horaStr)
+	s = strings.ReplaceAll(s, "{{hora_curta}}", horaCurtaStr)
+	s = strings.ReplaceAll(s, "{{time}}", horaStr)
+
 	return s
 }
 
@@ -277,7 +306,9 @@ func buildMessage(task *Task, to string) string {
 
 	domain := extractDomain(task.FromAddress)
 	msgID := randomMessageID(domain)
-	now := time.Now()
+	// Usa o fuso horário de Brasília (UTC-3) para os cabeçalhos de data
+	brtLoc := time.FixedZone("BRT", -3*3600)
+	now := time.Now().In(brtLoc)
 	protocol := generateProtocol()
 
 	// ── Core headers ──────────────────────────────────────────────────────────

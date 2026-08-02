@@ -1,5 +1,6 @@
 import os
 import random
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
 from typing import Optional
@@ -35,15 +36,46 @@ def _replace_tags(value: str, *, to_address: str, cta_url: Optional[str], unsubs
     if not value:
         return value
     domain = to_address.split("@", 1)[1] if "@" in to_address else ""
+
+    # Fuso horário de Brasília (UTC-3)
+    brt = timezone(timedelta(hours=-3))
+    now = datetime.now(brt)
+    data_str = now.strftime("%d/%m/%Y")
+    hora_str = now.strftime("%H:%M:%S")
+    hora_curta_str = now.strftime("%H:%M")
+
+    cta_resolved = cta_url or ""
+    if cta_resolved:
+        cta_resolved = cta_resolved.replace("{{email}}", to_address)
+        cta_resolved = cta_resolved.replace("{{domain}}", domain)
+        cta_resolved = cta_resolved.replace("{{protocol}}", protocol)
+        cta_resolved = cta_resolved.replace("{{data}}", data_str)
+        cta_resolved = cta_resolved.replace("{{date}}", data_str)
+        cta_resolved = cta_resolved.replace("{{hora}}", hora_str)
+        cta_resolved = cta_resolved.replace("{{time}}", hora_str)
+        if subject is not None:
+            cta_resolved = cta_resolved.replace("{{subject}}", subject)
+
+    unsub_resolved = unsubscribe_url or ""
+    if unsub_resolved:
+        unsub_resolved = unsub_resolved.replace("{{email}}", to_address)
+        unsub_resolved = unsub_resolved.replace("{{domain}}", domain)
+        unsub_resolved = unsub_resolved.replace("{{protocol}}", protocol)
+
+    if cta_resolved:
+        value = value.replace("{{cta_url}}", cta_resolved)
+    if unsub_resolved:
+        value = value.replace("{{unsubscribe_url}}", unsub_resolved)
     value = value.replace("{{email}}", to_address)
     value = value.replace("{{domain}}", domain)
     value = value.replace("{{protocol}}", protocol)
+    value = value.replace("{{data}}", data_str)
+    value = value.replace("{{date}}", data_str)
+    value = value.replace("{{hora}}", hora_str)
+    value = value.replace("{{hora_curta}}", hora_curta_str)
+    value = value.replace("{{time}}", hora_str)
     if subject is not None:
         value = value.replace("{{subject}}", subject)
-    if cta_url:
-        value = value.replace("{{cta_url}}", cta_url)
-    if unsubscribe_url:
-        value = value.replace("{{unsubscribe_url}}", unsubscribe_url)
     return value
 
 
