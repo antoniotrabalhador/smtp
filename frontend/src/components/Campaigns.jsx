@@ -285,6 +285,9 @@ export default function Campaigns({ nodes }) {
       cta_url: form.cta_url.trim(),
       rate_per_hour: Number(form.rate_per_hour) || 0,
       chunk_size: Number(form.chunk_size) || 2000,
+      scheduled_at: form.scheduled_at ? new Date(form.scheduled_at).toISOString() : null,
+      window_start: form.window_start.trim() || null,
+      window_end: form.window_end.trim() || null,
       node_ids: form.node_ids,
       recipients,
       test_recipient: form.test_recipient.trim(),
@@ -404,6 +407,43 @@ export default function Campaigns({ nodes }) {
             placeholder="CTA URL — ex: https://site.com/form?email={{email}}"
             style={{ padding: 10, borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9" }}
           />
+        </div>
+
+        <div style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: 6, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: "0.82em", color: "#8b949e", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+            <span>⏰</span> Agendamento & Janela de Horários (Fuso Brasília UTC-3)
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr", gap: 12, alignItems: "center" }}>
+            <label style={{ fontSize: "0.78em", color: "#8b949e", display: "flex", flexDirection: "column", gap: 4 }}>
+              Agendar Início (opcional)
+              <input
+                type="datetime-local"
+                value={form.scheduled_at}
+                onChange={(e) => updateField("scheduled_at", e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9", fontSize: "0.88em" }}
+              />
+            </label>
+            <label style={{ fontSize: "0.78em", color: "#8b949e", display: "flex", flexDirection: "column", gap: 4 }}>
+              Janela Início
+              <input
+                type="time"
+                value={form.window_start}
+                onChange={(e) => updateField("window_start", e.target.value)}
+                placeholder="08:00"
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9", fontSize: "0.88em" }}
+              />
+            </label>
+            <label style={{ fontSize: "0.78em", color: "#8b949e", display: "flex", flexDirection: "column", gap: 4 }}>
+              Janela Fim
+              <input
+                type="time"
+                value={form.window_end}
+                onChange={(e) => updateField("window_end", e.target.value)}
+                placeholder="18:00"
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #30363d", background: "#0d1117", color: "#c9d1d9", fontSize: "0.88em" }}
+              />
+            </label>
+          </div>
         </div>
 
         <div>

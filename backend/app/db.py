@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 from sqlalchemy import text
 from sqlmodel import SQLModel, Session, create_engine
@@ -31,6 +31,9 @@ NEW_TASK_COLUMNS = {
     "unsubscribe_url": "TEXT",
     "feedback_id": "TEXT",
     "cta_url": "TEXT",
+    "scheduled_at": "TEXT",
+    "window_start": "TEXT",
+    "window_end": "TEXT",
 }
 
 NEW_CAMPAIGN_COLUMNS = {
@@ -40,6 +43,9 @@ NEW_CAMPAIGN_COLUMNS = {
     "chunk_size": "INTEGER DEFAULT 2000",
     "status": "TEXT DEFAULT 'draft'",
     "started_at": "TEXT",
+    "scheduled_at": "TEXT",
+    "window_start": "TEXT",
+    "window_end": "TEXT",
 }
 
 
@@ -81,6 +87,8 @@ NEW_WEBHOOK_COLUMNS = {
     "sample_payload": "TEXT",
     "list_id": "INTEGER",
     "email_field": "TEXT",
+    "last_exported_at": "TEXT",
+    "last_exported_lead_id": "INTEGER",
 }
 
 

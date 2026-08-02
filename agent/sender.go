@@ -46,6 +46,49 @@ func jitteredDelay(base time.Duration) time.Duration {
 //
 // Observação de spam: não há impacto pois a conexão é com o Postfix LOCAL.
 // É o Postfix quem gerencia as conexões externas (e faz a entrega com DKIM, SPF etc.)
+func isInsideWindow(startStr, endStr string) bool {
+	if startStr == "" || endStr == "" {
+		return true // Sem restrição
+	}
+	brtLoc := time.FixedZone("BRT", -3*3600)
+	now := time.Now().In(brtLoc)
+	currentHM := now.Format("15:04")
+
+	if startStr <= endStr {
+		return currentHM >= startStr && currentHM <= endStr
+	}
+	return currentHM >= startStr || currentHM <= endStr
+}
+
+func waitUntilWindowOpens(ctx context.Context, taskID int, startStr, endStr string) bool {
+	logged := false
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		if isInsideWindow(startStr, endStr) {
+			if logged {
+				log.Printf("[task %d] Janela de disparo aberta (%s - %s). Retomando envios...", taskID, startStr, endStr)
+			}
+			return true
+		}
+
+		if !logged {
+			log.Printf("[task %d] Fora da janela de disparo (%s - %s). Aguardando abertura...", taskID, startStr, endStr)
+			logged = true
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(30 * time.Second):
+		}
+	}
+}
+
 func SendBatch(ctx context.Context, task *Task) []SendResult {
 	results := make([]SendResult, 0, len(task.Recipients))
 
@@ -57,8 +100,6 @@ func SendBatch(ctx context.Context, task *Task) []SendResult {
 	start := time.Now()
 	total := len(task.Recipients)
 
-	// Tenta abrir uma única conexão persistente para o lote inteiro.
-	// Em caso de falha usa sendOne (1 conexão por e-mail) como fallback.
 	conn, err := openSMTPConn()
 	if err != nil {
 		log.Printf("[task %d] aviso: conexão persistente falhou (%v) — modo individual", task.ID, err)
@@ -68,12 +109,17 @@ func SendBatch(ctx context.Context, task *Task) []SendResult {
 	}
 
 	for i, to := range task.Recipients {
-		// Verifica cancelamento antes de cada envio
 		select {
 		case <-ctx.Done():
 			log.Printf("[task %d] cancelado após %d/%d envios — reportando parcial", task.ID, i, total)
 			return results
 		default:
+		}
+
+		// Aguarda janela de horário se configurada
+		if !waitUntilWindowOpens(ctx, task.ID, task.WindowStart, task.WindowEnd) {
+			log.Printf("[task %d] cancelado durante espera da janela após %d/%d envios", task.ID, i, total)
+			return results
 		}
 
 		result := SendResult{To: to}

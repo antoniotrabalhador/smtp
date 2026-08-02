@@ -38,7 +38,11 @@ def _get_mappings(webhook_id: int, session: Session) -> List[WebhookColumnMappin
     ).all()
 
 
-def _serialize(wh: WebhookEndpoint, mappings: List[WebhookColumnMapping]) -> dict:
+def _serialize(wh: WebhookEndpoint, mappings: List[WebhookColumnMapping], session: Session) -> dict:
+    last_id = wh.last_exported_lead_id or 0
+    new_count = session.exec(
+        text("SELECT COUNT(*) FROM webhooklead WHERE webhook_id = :wid AND id > :lid").bindparams(wid=wh.id, lid=last_id)
+    ).one()[0]
     return {
         "id": wh.id,
         "name": wh.name,
@@ -46,6 +50,9 @@ def _serialize(wh: WebhookEndpoint, mappings: List[WebhookColumnMapping]) -> dic
         "status": wh.status,
         "sample_payload": wh.sample_payload,
         "total_received": wh.total_received,
+        "last_exported_at": wh.last_exported_at,
+        "last_exported_lead_id": wh.last_exported_lead_id,
+        "new_leads_count": new_count,
         "created_at": wh.created_at,
         "mappings": [
             {
@@ -67,7 +74,7 @@ def list_webhooks(session: Session = Depends(get_session)):
     webhooks = session.exec(
         select(WebhookEndpoint).order_by(WebhookEndpoint.created_at.desc())
     ).all()
-    return [_serialize(wh, _get_mappings(wh.id, session)) for wh in webhooks]
+    return [_serialize(wh, _get_mappings(wh.id, session), session) for wh in webhooks]
 
 
 @router.get("/{webhook_id}", response_model=WebhookEndpointRead)
@@ -75,7 +82,7 @@ def get_webhook(webhook_id: int, session: Session = Depends(get_session)):
     wh = session.get(WebhookEndpoint, webhook_id)
     if not wh:
         raise HTTPException(status_code=404, detail="Webhook não encontrado")
-    return _serialize(wh, _get_mappings(wh.id, session))
+    return _serialize(wh, _get_mappings(wh.id, session), session)
 
 
 @router.post("", response_model=WebhookEndpointRead, status_code=201)
@@ -88,7 +95,7 @@ def create_webhook(payload: WebhookEndpointCreate, session: Session = Depends(ge
     session.add(wh)
     session.commit()
     session.refresh(wh)
-    return _serialize(wh, [])
+    return _serialize(wh, [], session)
 
 
 @router.patch("/{webhook_id}/configure", response_model=WebhookEndpointRead)
@@ -100,32 +107,28 @@ def configure_webhook(
     wh = session.get(WebhookEndpoint, webhook_id)
     if not wh:
         raise HTTPException(status_code=404, detail="Webhook não encontrado")
-    if wh.status == "pending_config":
-        raise HTTPException(status_code=400, detail="Envie um webhook de teste primeiro")
-    if not payload.mappings:
-        raise HTTPException(status_code=400, detail="Adicione ao menos uma coluna")
-    for m in payload.mappings:
-        if not m.column_name.strip() or not m.json_path.strip():
-            raise HTTPException(status_code=400, detail="Todos os campos devem ser preenchidos")
 
-    # Replace mappings
-    for old in _get_mappings(webhook_id, session):
-        session.delete(old)
-    session.commit()
+    session.exec(
+        text("DELETE FROM webhookcolumnmapping WHERE webhook_id = :wid").bindparams(wid=webhook_id)
+    )
 
-    for item in payload.mappings:
-        session.add(WebhookColumnMapping(
+    new_mappings = []
+    for i, item in enumerate(payload.mappings):
+        m = WebhookColumnMapping(
             webhook_id=webhook_id,
             column_name=item.column_name.strip(),
             json_path=item.json_path.strip(),
             is_email=item.is_email,
-            sort_order=item.sort_order,
-        ))
+            sort_order=i,
+        )
+        session.add(m)
+        new_mappings.append(m)
 
     wh.status = "active"
     session.add(wh)
     session.commit()
-    return _serialize(wh, _get_mappings(webhook_id, session))
+    session.refresh(wh)
+    return _serialize(wh, new_mappings, session)
 
 
 @router.delete("/{webhook_id}", status_code=204)
@@ -133,10 +136,13 @@ def delete_webhook(webhook_id: int, session: Session = Depends(get_session)):
     wh = session.get(WebhookEndpoint, webhook_id)
     if not wh:
         raise HTTPException(status_code=404, detail="Webhook não encontrado")
-    for m in _get_mappings(webhook_id, session):
-        session.delete(m)
-    for lead in session.exec(select(WebhookLead).where(WebhookLead.webhook_id == webhook_id)).all():
-        session.delete(lead)
+
+    session.exec(
+        text("DELETE FROM webhookcolumnmapping WHERE webhook_id = :wid").bindparams(wid=webhook_id)
+    )
+    session.exec(
+        text("DELETE FROM webhooklead WHERE webhook_id = :wid").bindparams(wid=webhook_id)
+    )
     session.delete(wh)
     session.commit()
 
@@ -158,6 +164,65 @@ def get_leads(webhook_id: int, limit: int = 100, session: Session = Depends(get_
         "total": total,
         "leads": [{"id": l.id, "data": l.data, "created_at": l.created_at} for l in leads],
     }
+
+
+@router.get("/{webhook_id}/export-file")
+def export_webhook_file(
+    webhook_id: int,
+    file_format: str = "csv",
+    scope: str = "new",
+    session: Session = Depends(get_session),
+):
+    wh = session.get(WebhookEndpoint, webhook_id)
+    if not wh:
+        raise HTTPException(status_code=404, detail="Webhook não encontrado")
+
+    mappings = _get_mappings(webhook_id, session)
+    if not mappings:
+        raise HTTPException(status_code=400, detail="Webhook sem mapeamento de colunas configurado")
+
+    query = select(WebhookLead).where(WebhookLead.webhook_id == webhook_id)
+    if scope == "new" and wh.last_exported_lead_id:
+        query = query.where(WebhookLead.id > wh.last_exported_lead_id)
+
+    leads = session.exec(query.order_by(WebhookLead.id.asc())).all()
+    if not leads:
+        raise HTTPException(status_code=404, detail="Nenhum lead encontrado para este filtro")
+
+    columns = [m.column_name for m in mappings]
+    output_lines = [";".join(columns)]
+    max_id = wh.last_exported_lead_id or 0
+
+    for lead in leads:
+        if lead.id > max_id:
+            max_id = lead.id
+        try:
+            row_data = json.loads(lead.data)
+        except Exception:
+            row_data = {}
+        row_vals = [
+            str(row_data.get(col, "") or "").replace(";", ",").replace("\n", " ").replace("\r", "")
+            for col in columns
+        ]
+        output_lines.append(";".join(row_vals))
+
+    if scope == "new" and leads:
+        wh.last_exported_lead_id = max_id
+        wh.last_exported_at = datetime.utcnow()
+        session.add(wh)
+        session.commit()
+
+    content = "\n".join(output_lines)
+    ext = "txt" if file_format.lower() == "txt" else "csv"
+    media_type = "text/plain" if ext == "txt" else "text/csv"
+    safe_name = "".join(c for c in wh.name if c.isalnum() or c in ("-", "_")).strip() or "webhook"
+    filename = f"leads_{safe_name}_{scope}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.{ext}"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Public receiver ───────────────────────────────────────────────────────────

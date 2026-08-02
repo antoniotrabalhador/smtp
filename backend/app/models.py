@@ -1,4 +1,4 @@
-﻿import re
+import re
 import secrets
 from datetime import datetime
 from typing import List, Optional
@@ -114,7 +114,7 @@ class NodeRead(SQLModel):
     created_at: datetime
 
 
-# â”€â”€ Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Task ─────────────────────────────────────────────────────────────────────
 
 class Task(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -133,6 +133,9 @@ class Task(SQLModel, table=True):
     unsubscribe_url: Optional[str] = None
     feedback_id: Optional[str] = None
     cta_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
     sent_count: int = 0
     error_count: int = 0
     task_log: Optional[str] = None
@@ -153,6 +156,9 @@ class TaskCreate(SQLModel):
     unsubscribe_url: Optional[str] = None
     feedback_id: Optional[str] = None
     cta_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
 
 
 class TaskRead(SQLModel):
@@ -172,6 +178,9 @@ class TaskRead(SQLModel):
     unsubscribe_url: Optional[str] = None
     feedback_id: Optional[str] = None
     cta_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
     sent_count: int
     error_count: int
     task_log: Optional[str] = None
@@ -183,7 +192,7 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-# â”€â”€ Recipient Lists â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Recipient Lists ──────────────────────────────────────────────────────────
 
 class RecipientList(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -209,7 +218,7 @@ class Recipient(SQLModel, table=True):
     row_index: int = Field(index=True)     # stable position within list, 0-based
 
 
-# â”€â”€ Campaign Shards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Campaign Shards ──────────────────────────────────────────────────────────
 
 class CampaignShard(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -245,7 +254,7 @@ class CampaignShardRead(SQLModel):
     finished_at: Optional[datetime] = None
 
 
-# â”€â”€ Campaigns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Campaigns ────────────────────────────────────────────────────────────────
 
 class Campaign(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -257,10 +266,13 @@ class Campaign(SQLModel, table=True):
     cta_url: Optional[str] = None
     rate_per_hour: int = 0
     chunk_size: int = 2000
+    scheduled_at: Optional[datetime] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
     test_recipient: Optional[str] = None
     is_test: bool = False
     is_draft: bool = False
-    status: str = Field(default="draft")  # draft | ready | running | paused | done
+    status: str = Field(default="draft")  # draft | ready | scheduled | running | paused | done
     total_recipients: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
@@ -348,6 +360,8 @@ class WebhookEndpoint(SQLModel, table=True):
     status: str = Field(default="pending_config")  # pending_config | configuring | active
     sample_payload: Optional[str] = None
     total_received: int = 0
+    last_exported_at: Optional[datetime] = None
+    last_exported_lead_id: Optional[int] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -389,6 +403,9 @@ class WebhookEndpointRead(SQLModel):
     status: str
     sample_payload: Optional[str] = None
     total_received: int
+    last_exported_at: Optional[datetime] = None
+    last_exported_lead_id: Optional[int] = None
+    new_leads_count: int = 0
     created_at: datetime
     mappings: List[dict] = []
 

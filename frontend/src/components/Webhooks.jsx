@@ -336,6 +336,12 @@ function WebhookCard({ wh, onDelete, onRefresh }) {
     }
   }
 
+  function handleExport(format, scope) {
+    const url = `${API}/${wh.id}/export-file?file_format=${format}&scope=${scope}`
+    window.open(url, '_blank')
+    setTimeout(() => { onRefresh() }, 1500)
+  }
+
   return (
     <div style={{
       background: '#111',
@@ -350,15 +356,74 @@ function WebhookCard({ wh, onDelete, onRefresh }) {
           <span style={{ color: '#fff', fontWeight: 700, fontSize: '15px' }}>{wh.name}</span>
           <StatusBadge status={wh.status} />
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           {wh.status === 'active' && (
             <>
               <span style={{
                 background: '#0e1c0e', color: '#4ade80', border: '1px solid #14532d',
                 padding: '2px 10px', borderRadius: '12px', fontSize: '12px',
               }}>
-                {wh.total_received} leads
+                {wh.total_received} leads no total
               </span>
+              {wh.new_leads_count > 0 ? (
+                <span style={{
+                  background: '#2e1065', color: '#c084fc', border: '1px solid #581c87',
+                  padding: '2px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600,
+                }}>
+                  🔥 {wh.new_leads_count} novos p/ baixar
+                </span>
+              ) : (
+                <span style={{
+                  background: '#18181b', color: '#71717a', border: '1px solid #27272a',
+                  padding: '2px 10px', borderRadius: '12px', fontSize: '12px',
+                }}>
+                  ✓ Tudo baixado
+                </span>
+              )}
+              <button
+                onClick={() => handleExport('csv', 'new')}
+                disabled={wh.new_leads_count === 0}
+                title="Baixar apenas os leads novos que chegaram desde o último download no formato CSV (coluna;coluna)"
+                style={{
+                  background: wh.new_leads_count > 0 ? '#15803d' : '#27272a',
+                  border: '1px solid #22c55e', color: wh.new_leads_count > 0 ? '#fff' : '#71717a',
+                  borderRadius: '6px', padding: '4px 10px', cursor: wh.new_leads_count > 0 ? 'pointer' : 'not-allowed', fontSize: '12px', fontWeight: 600,
+                }}
+              >
+                📥 CSV (Novos)
+              </button>
+              <button
+                onClick={() => handleExport('txt', 'new')}
+                disabled={wh.new_leads_count === 0}
+                title="Baixar apenas os leads novos no formato TXT (coluna;coluna)"
+                style={{
+                  background: wh.new_leads_count > 0 ? '#1e3a8a' : '#27272a',
+                  border: '1px solid #3b82f6', color: wh.new_leads_count > 0 ? '#fff' : '#71717a',
+                  borderRadius: '6px', padding: '4px 10px', cursor: wh.new_leads_count > 0 ? 'pointer' : 'not-allowed', fontSize: '12px', fontWeight: 600,
+                }}
+              >
+                📄 TXT (Novos)
+              </button>
+              <button
+                onClick={() => handleExport('csv', 'all')}
+                title="Baixar a base completa de todos os leads acumulados neste webhook (CSV)"
+                style={{
+                  background: '#18181b', border: '1px solid #3f3f46', color: '#a1a1aa',
+                  borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px',
+                }}
+              >
+                CSV (Todos)
+              </button>
+              <button
+                onClick={() => handleExport('txt', 'all')}
+                title="Baixar a base completa de todos os leads acumulados neste webhook (TXT)"
+                style={{
+                  background: '#18181b', border: '1px solid #3f3f46', color: '#a1a1aa',
+                  borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px',
+                }}
+              >
+                TXT (Todos)
+              </button>
               <button
                 onClick={() => setShowLeads(v => !v)}
                 style={{

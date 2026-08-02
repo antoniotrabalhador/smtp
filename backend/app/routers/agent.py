@@ -102,6 +102,9 @@ def _dispatch_shard_chunk(shard: CampaignShard, node: Node, session: Session) ->
         unsubscribe_url=unsub_url,
         feedback_id=feedback_id,
         cta_url=campaign.cta_url,
+        scheduled_at=campaign.scheduled_at,
+        window_start=campaign.window_start,
+        window_end=campaign.window_end,
     )
     session.add(task)
     shard.current_task_id = None  # will update after commit
@@ -177,6 +180,8 @@ def poll_tasks(node_id: int, x_agent_token: str = Header(...), session: Session 
         "unsubscribe_url": unsub_url,
         "feedback_id": feedback_id,
         "cta_url": task.cta_url or "",
+        "window_start": task.window_start or "",
+        "window_end": task.window_end or "",
     }
 
 

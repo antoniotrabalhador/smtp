@@ -22,6 +22,8 @@ type Task struct {
 	UnsubscribeURL string   `json:"unsubscribe_url"`
 	FeedbackID     string   `json:"feedback_id"`
 	CtaURL         string   `json:"cta_url"`
+	WindowStart    string   `json:"window_start"`
+	WindowEnd      string   `json:"window_end"`
 }
 
 type TaskReport struct {

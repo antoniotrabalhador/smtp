@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from "react"
+import { useState, useEffect } from "react"
 
 const SMART_TAGS = [
   { tag: "{{subject}}", desc: "Assunto do email (definido na campanha)", sample: "Oferta exclusiva para você" },

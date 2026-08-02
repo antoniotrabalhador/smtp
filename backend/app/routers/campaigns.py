@@ -170,6 +170,9 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
             raise HTTPException(status_code=400, detail="Lista de destinatarios vazia")
         nodes = _load_nodes(payload.node_ids, session)
 
+    is_scheduled = bool(payload.scheduled_at and payload.scheduled_at > datetime.utcnow())
+    initial_status = "draft" if payload.is_draft else ("scheduled" if is_scheduled else "ready")
+
     campaign = Campaign(
         name=payload.name.strip() or "Campanha",
         parent_campaign_id=payload.parent_campaign_id,
@@ -177,9 +180,13 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
         subject=subject,
         cta_url=(payload.cta_url or "").strip() or None,
         rate_per_hour=payload.rate_per_hour,
+        scheduled_at=payload.scheduled_at,
+        window_start=(payload.window_start or "").strip() or None,
+        window_end=(payload.window_end or "").strip() or None,
         total_recipients=len(recipients),
         is_test=False,
         is_draft=payload.is_draft,
+        status=initial_status,
     )
     session.add(campaign)
     session.commit()
@@ -202,6 +209,9 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
                     recipients=json.dumps(node_recipients),
                     rate_per_hour=payload.rate_per_hour,
                     cta_url=campaign.cta_url,
+                    scheduled_at=campaign.scheduled_at,
+                    window_start=campaign.window_start,
+                    window_end=campaign.window_end,
                 )
             )
         session.commit()
@@ -228,6 +238,9 @@ def update_campaign(campaign_id: int, payload: CampaignCreate, session: Session 
     campaign.subject = subject
     campaign.cta_url = (payload.cta_url or "").strip() or None
     campaign.rate_per_hour = payload.rate_per_hour
+    campaign.scheduled_at = payload.scheduled_at
+    campaign.window_start = (payload.window_start or "").strip() or None
+    campaign.window_end = (payload.window_end or "").strip() or None
     campaign.is_draft = payload.is_draft
     if payload.is_draft:
         campaign.total_recipients = 0
