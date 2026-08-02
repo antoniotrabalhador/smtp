@@ -336,10 +336,32 @@ function WebhookCard({ wh, onDelete, onRefresh }) {
     }
   }
 
-  function handleExport(format, scope) {
-    const url = `${API}/${wh.id}/export-file?file_format=${format}&scope=${scope}`
-    window.open(url, '_blank')
-    setTimeout(() => { onRefresh() }, 1500)
+  async function handleExport(format, scope) {
+    try {
+      const res = await fetch(`${API}/${wh.id}/export-file?file_format=${format}&scope=${scope}`)
+      if (!res.ok) {
+        const err = await res.json().catch(() => null)
+        alert(err?.detail || 'Erro ao exportar arquivo')
+        return
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition')
+      let filename = `leads_${wh.name}_${scope}.${format}`
+      if (disposition && disposition.includes('filename=')) {
+        filename = disposition.split('filename=')[1].replace(/"/g, '')
+      }
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = downloadUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(downloadUrl)
+      onRefresh()
+    } catch (err) {
+      alert('Erro na conexão ao baixar: ' + err.message)
+    }
   }
 
   return (

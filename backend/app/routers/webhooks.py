@@ -39,10 +39,14 @@ def _get_mappings(webhook_id: int, session: Session) -> List[WebhookColumnMappin
 
 
 def _serialize(wh: WebhookEndpoint, mappings: List[WebhookColumnMapping], session: Session) -> dict:
-    last_id = wh.last_exported_lead_id or 0
-    new_count = session.exec(
-        text("SELECT COUNT(*) FROM webhooklead WHERE webhook_id = :wid AND id > :lid").bindparams(wid=wh.id, lid=last_id)
-    ).one()[0]
+    last_id = getattr(wh, "last_exported_lead_id", None) or 0
+    try:
+        new_count = session.exec(
+            text("SELECT COUNT(*) FROM webhooklead WHERE webhook_id = :wid AND id > :lid").bindparams(wid=wh.id, lid=last_id)
+        ).one()[0]
+    except Exception:
+        new_count = 0
+
     return {
         "id": wh.id,
         "name": wh.name,
@@ -50,8 +54,8 @@ def _serialize(wh: WebhookEndpoint, mappings: List[WebhookColumnMapping], sessio
         "status": wh.status,
         "sample_payload": wh.sample_payload,
         "total_received": wh.total_received,
-        "last_exported_at": wh.last_exported_at,
-        "last_exported_lead_id": wh.last_exported_lead_id,
+        "last_exported_at": getattr(wh, "last_exported_at", None),
+        "last_exported_lead_id": getattr(wh, "last_exported_lead_id", None),
         "new_leads_count": new_count,
         "created_at": wh.created_at,
         "mappings": [
@@ -173,56 +177,65 @@ def export_webhook_file(
     scope: str = "new",
     session: Session = Depends(get_session),
 ):
-    wh = session.get(WebhookEndpoint, webhook_id)
-    if not wh:
-        raise HTTPException(status_code=404, detail="Webhook não encontrado")
+    try:
+        wh = session.get(WebhookEndpoint, webhook_id)
+        if not wh:
+            raise HTTPException(status_code=404, detail="Webhook não encontrado")
 
-    mappings = _get_mappings(webhook_id, session)
-    if not mappings:
-        raise HTTPException(status_code=400, detail="Webhook sem mapeamento de colunas configurado")
+        mappings = _get_mappings(webhook_id, session)
+        if not mappings:
+            raise HTTPException(status_code=400, detail="Webhook sem mapeamento de colunas configurado")
 
-    query = select(WebhookLead).where(WebhookLead.webhook_id == webhook_id)
-    if scope == "new" and wh.last_exported_lead_id:
-        query = query.where(WebhookLead.id > wh.last_exported_lead_id)
+        last_id = getattr(wh, "last_exported_lead_id", None) or 0
+        query = select(WebhookLead).where(WebhookLead.webhook_id == webhook_id)
+        if scope == "new" and last_id:
+            query = query.where(WebhookLead.id > last_id)
 
-    leads = session.exec(query.order_by(WebhookLead.id.asc())).all()
-    if not leads:
-        raise HTTPException(status_code=404, detail="Nenhum lead encontrado para este filtro")
+        leads = session.exec(query.order_by(WebhookLead.id.asc())).all()
+        if not leads:
+            raise HTTPException(status_code=404, detail="Nenhum lead encontrado para este filtro")
 
-    columns = [m.column_name for m in mappings]
-    output_lines = [";".join(columns)]
-    max_id = wh.last_exported_lead_id or 0
+        columns = [m.column_name for m in mappings]
+        output_lines = [";".join(columns)]
+        max_id = last_id
 
-    for lead in leads:
-        if lead.id > max_id:
-            max_id = lead.id
-        try:
-            row_data = json.loads(lead.data)
-        except Exception:
-            row_data = {}
-        row_vals = [
-            str(row_data.get(col, "") or "").replace(";", ",").replace("\n", " ").replace("\r", "")
-            for col in columns
-        ]
-        output_lines.append(";".join(row_vals))
+        for lead in leads:
+            if lead.id > max_id:
+                max_id = lead.id
+            try:
+                row_data = json.loads(lead.data)
+            except Exception:
+                row_data = {}
+            row_vals = [
+                str(row_data.get(col, "") or "").replace(";", ",").replace("\n", " ").replace("\r", "")
+                for col in columns
+            ]
+            output_lines.append(";".join(row_vals))
 
-    if scope == "new" and leads:
-        wh.last_exported_lead_id = max_id
-        wh.last_exported_at = datetime.utcnow()
-        session.add(wh)
-        session.commit()
+        if scope == "new" and leads:
+            try:
+                wh.last_exported_lead_id = max_id
+                wh.last_exported_at = datetime.utcnow()
+                session.add(wh)
+                session.commit()
+            except Exception:
+                pass  # Fallback if DB columns not yet migrated
 
-    content = "\n".join(output_lines)
-    ext = "txt" if file_format.lower() == "txt" else "csv"
-    media_type = "text/plain" if ext == "txt" else "text/csv"
-    safe_name = "".join(c for c in wh.name if c.isalnum() or c in ("-", "_")).strip() or "webhook"
-    filename = f"leads_{safe_name}_{scope}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.{ext}"
+        content = "\n".join(output_lines)
+        ext = "txt" if file_format.lower() == "txt" else "csv"
+        media_type = "text/plain" if ext == "txt" else "text/csv"
+        safe_name = "".join(c for c in wh.name if c.isalnum() or c in ("-", "_")).strip() or "webhook"
+        filename = f"leads_{safe_name}_{scope}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
-    return Response(
-        content=content,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro ao exportar: {str(exc)}")
 
 
 # ── Public receiver ───────────────────────────────────────────────────────────
