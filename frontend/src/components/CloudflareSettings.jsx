@@ -68,7 +68,30 @@ export default function CloudflareSettings() {
     }
   }
 
+  const [syncing, setSyncing] = useState(false)
+
+  async function handleSync() {
+    setSyncing(true)
+    setStatus(null)
+    try {
+      const sync = await importCloudflareZones()
+      const items = await listCloudflareDomains()
+      setDomains(items || [])
+      setStatus({
+        ok: true,
+        message: `Domínios sincronizados! Novos: ${sync.created}, Atualizados: ${sync.updated}, Total: ${sync.total}.`,
+      })
+    } catch (err) {
+      setStatus({ ok: false, message: err.message })
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   async function handleClearToken() {
+    if (!window.confirm("Atenção: Remover o token desvinculará os domínios de TODAS as VPSs. Deseja continuar?")) {
+      return
+    }
     setSaving(true)
     setStatus(null)
     try {
@@ -171,6 +194,9 @@ export default function CloudflareSettings() {
         <button onClick={handleSave} disabled={saving}>
           {saving ? "Salvando..." : "Salvar"}
         </button>
+        <button onClick={handleSync} disabled={syncing || saving || !hasToken}>
+          {syncing ? "Sincronizando..." : "🔄 Sincronizar domínios"}
+        </button>
         <button onClick={handleTest} disabled={testing || saving}>
           {testing ? "Testando..." : "Testar conexão"}
         </button>
@@ -186,7 +212,16 @@ export default function CloudflareSettings() {
         <div className={`full-width section-result ${status.ok ? "status-ok" : "status-err"}`}>{status.message}</div>
       )}
       <div className="full-width" style={{ marginTop: 12, borderTop: "1px solid #30363d", paddingTop: 12 }}>
-        <h3 style={{ margin: "0 0 10px 0" }}>Domínios sincronizados</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <h3 style={{ margin: 0 }}>Domínios sincronizados</h3>
+          <button
+            onClick={handleSync}
+            disabled={syncing || saving || !hasToken}
+            style={{ fontSize: "0.85em", padding: "4px 10px" }}
+          >
+            {syncing ? "Sincronizando..." : "🔄 Atualizar lista"}
+          </button>
+        </div>
         {domains.length === 0 ? (
           <p className="node-card-meta">Nenhum domínio sincronizado ainda.</p>
         ) : (
