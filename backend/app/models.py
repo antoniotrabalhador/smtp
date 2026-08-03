@@ -287,6 +287,9 @@ class CampaignCreate(SQLModel):
     cta_url: Optional[str] = None
     rate_per_hour: int = 0
     chunk_size: int = 2000
+    scheduled_at: Optional[datetime] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
     node_ids: List[int] = []
     recipients: List[str] = []
     test_recipient: Optional[str] = None
@@ -303,6 +306,9 @@ class CampaignRead(SQLModel):
     cta_url: Optional[str] = None
     rate_per_hour: int
     chunk_size: int
+    scheduled_at: Optional[datetime] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
     test_recipient: Optional[str] = None
     is_test: bool
     is_draft: bool
