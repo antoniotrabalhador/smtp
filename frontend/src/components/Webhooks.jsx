@@ -569,7 +569,14 @@ export default function Webhooks() {
   const fetchAll = useCallback(async () => {
     try {
       const res = await fetch(API)
-      setWebhooks(await res.json())
+      if (!res.ok) {
+        console.error('Erro na resposta da API de webhooks:', res.status)
+        return
+      }
+      const data = await res.json()
+      setWebhooks(data)
+    } catch (err) {
+      console.error('Erro ao buscar webhooks:', err)
     } finally {
       setLoading(false)
     }

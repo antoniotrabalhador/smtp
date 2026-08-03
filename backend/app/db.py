@@ -50,36 +50,36 @@ NEW_CAMPAIGN_COLUMNS = {
 
 
 def _migrate_node_columns():
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(node)"))}
-        for column, col_type in NEW_NODE_COLUMNS.items():
-            if column not in existing:
-                conn.execute(text(f"ALTER TABLE node ADD COLUMN {column} {col_type}"))
-        conn.commit()
+    try:
+        with engine.begin() as conn:
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(node)"))}
+            for column, col_type in NEW_NODE_COLUMNS.items():
+                if column not in existing:
+                    conn.execute(text(f"ALTER TABLE node ADD COLUMN {column} {col_type}"))
+    except Exception:
+        pass
 
 
 def _migrate_task_columns():
-    with engine.connect() as conn:
-        try:
+    try:
+        with engine.begin() as conn:
             existing = {row[1] for row in conn.execute(text("PRAGMA table_info(task)"))}
             for column, col_type in NEW_TASK_COLUMNS.items():
                 if column not in existing:
                     conn.execute(text(f"ALTER TABLE task ADD COLUMN {column} {col_type}"))
-            conn.commit()
-        except Exception:
-            pass  # table may not exist yet
+    except Exception:
+        pass
 
 
 def _migrate_campaign_columns():
-    with engine.connect() as conn:
-        try:
+    try:
+        with engine.begin() as conn:
             existing = {row[1] for row in conn.execute(text("PRAGMA table_info(campaign)"))}
             for column, col_type in NEW_CAMPAIGN_COLUMNS.items():
                 if column not in existing:
                     conn.execute(text(f"ALTER TABLE campaign ADD COLUMN {column} {col_type}"))
-            conn.commit()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 NEW_WEBHOOK_COLUMNS = {
@@ -93,15 +93,14 @@ NEW_WEBHOOK_COLUMNS = {
 
 
 def _migrate_webhook_columns():
-    with engine.connect() as conn:
-        try:
+    try:
+        with engine.begin() as conn:
             existing = {row[1] for row in conn.execute(text("PRAGMA table_info(webhookendpoint)"))}
             for column, col_type in NEW_WEBHOOK_COLUMNS.items():
                 if column not in existing:
                     conn.execute(text(f"ALTER TABLE webhookendpoint ADD COLUMN {column} {col_type}"))
-            conn.commit()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def create_db_and_tables():
