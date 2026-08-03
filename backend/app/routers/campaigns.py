@@ -151,73 +151,78 @@ def list_campaigns(session: Session = Depends(get_session)):
 
 @router.post("")
 def create_campaign(payload: CampaignCreate, session: Session = Depends(get_session)):
-    if payload.template_id is None:
-        raise HTTPException(status_code=400, detail="Selecione um template")
+    try:
+        if payload.template_id is None:
+            raise HTTPException(status_code=400, detail="Selecione um template")
 
-    template = _load_template(payload.template_id, session)
-    subject = (payload.subject or template.subject or "").strip()
-    if not payload.is_draft and not subject:
-        raise HTTPException(status_code=400, detail="Assunto obrigatorio")
+        template = _load_template(payload.template_id, session)
+        subject = (payload.subject or template.subject or "").strip()
+        if not payload.is_draft and not subject:
+            raise HTTPException(status_code=400, detail="Assunto obrigatorio")
 
-    if payload.is_draft:
-        recipients = []
-        nodes = []
-    else:
-        if not payload.node_ids:
-            raise HTTPException(status_code=400, detail="Selecione pelo menos uma VPS")
-        recipients = [item.strip() for item in payload.recipients if item and item.strip()]
-        if not recipients:
-            raise HTTPException(status_code=400, detail="Lista de destinatarios vazia")
-        nodes = _load_nodes(payload.node_ids, session)
+        if payload.is_draft:
+            recipients = []
+            nodes = []
+        else:
+            if not payload.node_ids:
+                raise HTTPException(status_code=400, detail="Selecione pelo menos uma VPS")
+            recipients = [item.strip() for item in payload.recipients if item and item.strip()]
+            if not recipients:
+                raise HTTPException(status_code=400, detail="Lista de destinatarios vazia")
+            nodes = _load_nodes(payload.node_ids, session)
 
-    sched = payload.scheduled_at.replace(tzinfo=None) if (payload.scheduled_at and payload.scheduled_at.tzinfo) else payload.scheduled_at
-    is_scheduled = bool(sched and sched > datetime.utcnow())
-    initial_status = "draft" if payload.is_draft else ("scheduled" if is_scheduled else "ready")
+        sched = payload.scheduled_at.replace(tzinfo=None) if (payload.scheduled_at and payload.scheduled_at.tzinfo) else payload.scheduled_at
+        is_scheduled = bool(sched and sched > datetime.utcnow())
+        initial_status = "draft" if payload.is_draft else ("scheduled" if is_scheduled else "ready")
 
-    campaign = Campaign(
-        name=payload.name.strip() or "Campanha",
-        parent_campaign_id=payload.parent_campaign_id,
-        template_id=template.id,
-        subject=subject,
-        cta_url=(payload.cta_url or "").strip() or None,
-        rate_per_hour=payload.rate_per_hour,
-        scheduled_at=payload.scheduled_at,
-        window_start=(payload.window_start or "").strip() or None,
-        window_end=(payload.window_end or "").strip() or None,
-        total_recipients=len(recipients),
-        is_test=False,
-        is_draft=payload.is_draft,
-        status=initial_status,
-    )
-    session.add(campaign)
-    session.commit()
-    session.refresh(campaign)
-
-    if not payload.is_draft:
-        for node, node_recipients in zip(nodes, _chunk_recipients(recipients, len(nodes))):
-            if not node_recipients:
-                continue
-            session.add(
-                Task(
-                    node_id=node.id,
-                    campaign_id=campaign.id,
-                    is_test=False,
-                    subject=subject,
-                    body=template.plain_text or "",
-                    html=template.html,
-                    plain_text=template.plain_text,
-                    from_address=node.email_from,
-                    recipients=json.dumps(node_recipients),
-                    rate_per_hour=payload.rate_per_hour,
-                    cta_url=campaign.cta_url,
-                    scheduled_at=campaign.scheduled_at,
-                    window_start=campaign.window_start,
-                    window_end=campaign.window_end,
-                )
-            )
+        campaign = Campaign(
+            name=payload.name.strip() or "Campanha",
+            parent_campaign_id=payload.parent_campaign_id,
+            template_id=template.id,
+            subject=subject,
+            cta_url=(payload.cta_url or "").strip() or None,
+            rate_per_hour=payload.rate_per_hour,
+            scheduled_at=payload.scheduled_at,
+            window_start=(payload.window_start or "").strip() or None,
+            window_end=(payload.window_end or "").strip() or None,
+            total_recipients=len(recipients),
+            is_test=False,
+            is_draft=payload.is_draft,
+            status=initial_status,
+        )
+        session.add(campaign)
         session.commit()
+        session.refresh(campaign)
 
-    return {"ok": True, "campaign_id": campaign.id, "is_draft": payload.is_draft}
+        if not payload.is_draft:
+            for node, node_recipients in zip(nodes, _chunk_recipients(recipients, len(nodes))):
+                if not node_recipients:
+                    continue
+                session.add(
+                    Task(
+                        node_id=node.id,
+                        campaign_id=campaign.id,
+                        is_test=False,
+                        subject=subject,
+                        body=template.plain_text or "",
+                        html=template.html,
+                        plain_text=template.plain_text,
+                        from_address=node.email_from,
+                        recipients=json.dumps(node_recipients),
+                        rate_per_hour=payload.rate_per_hour,
+                        cta_url=campaign.cta_url,
+                        scheduled_at=campaign.scheduled_at,
+                        window_start=campaign.window_start,
+                        window_end=campaign.window_end,
+                    )
+                )
+            session.commit()
+
+        return {"ok": True, "campaign_id": campaign.id, "is_draft": payload.is_draft}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Erro ao criar campanha: {str(exc)}")
 
 
 @router.put("/{campaign_id}")

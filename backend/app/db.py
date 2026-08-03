@@ -49,37 +49,34 @@ NEW_CAMPAIGN_COLUMNS = {
 }
 
 
-def _migrate_node_columns():
+def _migrate_table_columns(table_name: str, columns_dict: dict):
     try:
-        with engine.begin() as conn:
-            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(node)"))}
-            for column, col_type in NEW_NODE_COLUMNS.items():
-                if column not in existing:
-                    conn.execute(text(f"ALTER TABLE node ADD COLUMN {column} {col_type}"))
-    except Exception:
-        pass
+        with engine.connect() as conn:
+            existing = {
+                row[1].lower()
+                for row in conn.execute(text(f"PRAGMA table_info('{table_name}')")).fetchall()
+            }
+            for col_name, col_type in columns_dict.items():
+                if col_name.lower() not in existing:
+                    try:
+                        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"))
+                        conn.commit()
+                    except Exception as e:
+                        print(f"Notice: Migration of {table_name}.{col_name}: {e}")
+    except Exception as e:
+        print(f"Notice: Table migration check for {table_name}: {e}")
+
+
+def _migrate_node_columns():
+    _migrate_table_columns("node", NEW_NODE_COLUMNS)
 
 
 def _migrate_task_columns():
-    try:
-        with engine.begin() as conn:
-            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(task)"))}
-            for column, col_type in NEW_TASK_COLUMNS.items():
-                if column not in existing:
-                    conn.execute(text(f"ALTER TABLE task ADD COLUMN {column} {col_type}"))
-    except Exception:
-        pass
+    _migrate_table_columns("task", NEW_TASK_COLUMNS)
 
 
 def _migrate_campaign_columns():
-    try:
-        with engine.begin() as conn:
-            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(campaign)"))}
-            for column, col_type in NEW_CAMPAIGN_COLUMNS.items():
-                if column not in existing:
-                    conn.execute(text(f"ALTER TABLE campaign ADD COLUMN {column} {col_type}"))
-    except Exception:
-        pass
+    _migrate_table_columns("campaign", NEW_CAMPAIGN_COLUMNS)
 
 
 NEW_WEBHOOK_COLUMNS = {
@@ -93,14 +90,7 @@ NEW_WEBHOOK_COLUMNS = {
 
 
 def _migrate_webhook_columns():
-    try:
-        with engine.begin() as conn:
-            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(webhookendpoint)"))}
-            for column, col_type in NEW_WEBHOOK_COLUMNS.items():
-                if column not in existing:
-                    conn.execute(text(f"ALTER TABLE webhookendpoint ADD COLUMN {column} {col_type}"))
-    except Exception:
-        pass
+    _migrate_table_columns("webhookendpoint", NEW_WEBHOOK_COLUMNS)
 
 
 def create_db_and_tables():
