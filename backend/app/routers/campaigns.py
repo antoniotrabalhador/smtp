@@ -170,7 +170,8 @@ def create_campaign(payload: CampaignCreate, session: Session = Depends(get_sess
             raise HTTPException(status_code=400, detail="Lista de destinatarios vazia")
         nodes = _load_nodes(payload.node_ids, session)
 
-    is_scheduled = bool(payload.scheduled_at and payload.scheduled_at > datetime.utcnow())
+    sched = payload.scheduled_at.replace(tzinfo=None) if (payload.scheduled_at and payload.scheduled_at.tzinfo) else payload.scheduled_at
+    is_scheduled = bool(sched and sched > datetime.utcnow())
     initial_status = "draft" if payload.is_draft else ("scheduled" if is_scheduled else "ready")
 
     campaign = Campaign(
@@ -399,9 +400,12 @@ def launch_campaign(campaign_id: int, payload: dict, session: Session = Depends(
         session.add(shard)
         shards.append(shard)
 
+    sched = campaign.scheduled_at.replace(tzinfo=None) if (campaign.scheduled_at and campaign.scheduled_at.tzinfo) else campaign.scheduled_at
+    is_scheduled = bool(sched and sched > datetime.utcnow())
+
     campaign.list_id = list_id
     campaign.chunk_size = chunk_size
-    campaign.status = "running"
+    campaign.status = "scheduled" if is_scheduled else "running"
     campaign.total_recipients = total_active
     campaign.is_draft = False
     campaign.started_at = datetime.utcnow()
