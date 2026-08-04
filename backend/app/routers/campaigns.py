@@ -5,12 +5,13 @@ from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.db import get_session, engine
 from app.models import Campaign, CampaignCreate, CampaignShard, EmailTemplate, Node, RecipientList, Task
-from app.ssh import send_test_email, get_postfix_stats
+from app.ssh import send_test_email, get_postfix_stats, get_raw_postfix_log
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
 
@@ -708,3 +709,53 @@ async def sync_postfix_stats(campaign_id: int, session: Session = Depends(get_se
         "total_bounced": total_bounced_all,
         "nodes": results,
     }
+
+
+@router.get("/{campaign_id}/download-logs")
+async def download_campaign_logs(campaign_id: int, session: Session = Depends(get_session)):
+    """
+    Downloads the raw /var/log/mail.log from every VPS assigned to this campaign
+    and bundles them into a single .tar.gz file, streamed directly to the client.
+    """
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    shards = session.exec(
+        select(CampaignShard).where(CampaignShard.campaign_id == campaign_id)
+    ).all()
+    if not shards:
+        raise HTTPException(status_code=400, detail="Campanha sem shards (não foi lançada via /launch)")
+
+    node_ids = list({s.node_id for s in shards})
+    nodes = session.exec(select(Node).where(Node.id.in_(node_ids))).all()
+
+    import asyncio
+    import io
+    import tarfile
+
+    # Fetch logs concurrently
+    log_contents = await asyncio.gather(*[get_raw_postfix_log(node) for node in nodes])
+
+    # Build tar.gz in memory
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w:gz") as tar:
+        for node, content in zip(nodes, log_contents):
+            if not content:
+                continue
+            
+            # Create a TarInfo object for this file
+            tarinfo = tarfile.TarInfo(name=f"mail_log_{node.hostname}_{node.id}.log")
+            tarinfo.size = len(content)
+            
+            # Write file content to tar
+            tar.addfile(tarinfo, io.BytesIO(content))
+
+    tar_stream.seek(0)
+    
+    filename = f"campaign_{campaign.id}_logs.tar.gz"
+    return StreamingResponse(
+        tar_stream,
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )

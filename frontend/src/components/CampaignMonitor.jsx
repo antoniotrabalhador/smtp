@@ -120,6 +120,14 @@ function CampaignCard({ campaign, prevSnapshot, onPause, onResume, onSyncPostfix
           >
             {syncing ? "⟳ Sincronizando..." : "↻ Sync Postfix"}
           </button>
+          <a
+            href={`/api/campaigns/${campaign.id}/download-logs`}
+            download
+            title="Baixa os logs do Postfix de todas as VPS num arquivo .tar.gz"
+            style={{ fontSize: "0.78em", padding: "4px 12px", background: "#238636", color: "#ffffff", border: "1px solid #2ea043", borderRadius: 6, cursor: "pointer", textDecoration: "none", display: "flex", alignItems: "center" }}
+          >
+            📥 Baixar Logs
+          </a>
         </div>
       </div>
 

@@ -1,5 +1,7 @@
+import io
 import os
 import random
+import tarfile
 from datetime import datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
@@ -157,6 +159,21 @@ async def get_postfix_stats(node: Node, since: Optional[str] = None, until: Opti
             "top_reasons": [],
             "error": str(exc),
         }
+
+
+async def get_raw_postfix_log(node: Node) -> bytes:
+    """
+    SSH into a node and fetch the raw contents of /var/log/mail.log.
+    Returns bytes so it can be assembled into a tar.gz.
+    """
+    try:
+        async with asyncssh.connect(**_connect_kwargs(node)) as conn:
+            result = await conn.run("cat /var/log/mail.log", check=False)
+            if result.stdout:
+                return result.stdout.encode('utf-8', errors='ignore') if isinstance(result.stdout, str) else result.stdout
+            return b""
+    except Exception:
+        return b""
 
 
 async def test_ssh_connection(node: Node) -> dict:
