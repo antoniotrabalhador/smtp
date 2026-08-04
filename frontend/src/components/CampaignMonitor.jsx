@@ -74,7 +74,7 @@ function computeStats(campaign, prevSnapshot) {
   return { realRate, etaSecs, elapsedSecs }
 }
 
-function CampaignCard({ campaign, prevSnapshot, onPause, onResume }) {
+function CampaignCard({ campaign, prevSnapshot, onPause, onResume, onSyncPostfix, syncing }) {
   const { realRate, etaSecs, elapsedSecs } = computeStats(campaign, prevSnapshot)
   const isRunning = campaign.status === "running"
   const isPaused = campaign.status === "paused"
@@ -112,6 +112,14 @@ function CampaignCard({ campaign, prevSnapshot, onPause, onResume }) {
               ▶ Retomar
             </button>
           )}
+          <button
+            onClick={() => onSyncPostfix(campaign.id)}
+            disabled={syncing}
+            title="Puxa contagem real do /var/log/mail.log de cada VPS via SSH"
+            style={{ fontSize: "0.78em", padding: "4px 12px", background: syncing ? "#21262d" : "#0d2238", color: syncing ? "#6e7681" : "#58a6ff", border: "1px solid #1f6feb", borderRadius: 6, cursor: syncing ? "not-allowed" : "pointer" }}
+          >
+            {syncing ? "⟳ Sincronizando..." : "↻ Sync Postfix"}
+          </button>
         </div>
       </div>
 
@@ -198,6 +206,7 @@ export default function CampaignMonitor() {
   const [loading, setLoading] = useState(true)
   const [countdown, setCountdown] = useState(REFRESH_INTERVAL)
   const [lastUpdated, setLastUpdated] = useState(null)
+  const [syncing, setSyncing] = useState({})
   const prevSnapshotsRef = useRef({}) // campaignId -> { sent, ts }
 
   async function fetchActive() {
@@ -245,6 +254,19 @@ export default function CampaignMonitor() {
   async function handleResume(id) {
     await fetch(`/api/campaigns/${id}/resume`, { method: "POST" })
     fetchActive()
+  }
+
+  async function handleSyncPostfix(id) {
+    setSyncing(prev => ({ ...prev, [id]: true }))
+    try {
+      const res = await fetch(`/api/campaigns/${id}/sync-postfix-stats`, { method: "POST" })
+      const data = await res.json()
+      if (data.ok) {
+        await fetchActive()
+      }
+    } finally {
+      setSyncing(prev => ({ ...prev, [id]: false }))
+    }
   }
 
   return (
@@ -303,6 +325,8 @@ export default function CampaignMonitor() {
           prevSnapshot={prevSnapshotsRef.current[campaign.id]}
           onPause={handlePause}
           onResume={handleResume}
+          onSyncPostfix={handleSyncPostfix}
+          syncing={!!syncing[campaign.id]}
         />
       ))}
 

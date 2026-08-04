@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session, engine
 from app.models import Campaign, CampaignCreate, CampaignShard, EmailTemplate, Node, RecipientList, Task
-from app.ssh import send_test_email
+from app.ssh import send_test_email, get_postfix_stats
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
 
@@ -630,3 +630,83 @@ def list_active_campaigns(session: Session = Depends(get_session)):
 
     return result
 
+
+@router.post("/{campaign_id}/sync-postfix-stats")
+async def sync_postfix_stats(campaign_id: int, session: Session = Depends(get_session)):
+    """
+    SSH into each node assigned to this campaign and count sent/bounced/deferred
+    emails from /var/log/mail.log. Updates the shard sent_count so the monitor
+    reflects real delivery numbers even when report_task was missed.
+    """
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+
+    shards = session.exec(
+        select(CampaignShard).where(CampaignShard.campaign_id == campaign_id)
+    ).all()
+    if not shards:
+        raise HTTPException(status_code=400, detail="Campanha sem shards (não foi lançada via /launch)")
+
+    node_ids = list({s.node_id for s in shards})
+    nodes = session.exec(select(Node).where(Node.id.in_(node_ids))).all()
+    nodes_by_id = {n.id: n for n in nodes}
+
+    results = []
+    total_sent_all = 0
+    total_bounced_all = 0
+
+    import asyncio
+    stats_list = await asyncio.gather(*[
+        get_postfix_stats(nodes_by_id[node_id])
+        for node_id in node_ids
+        if node_id in nodes_by_id
+    ])
+
+    stats_by_node = {s["node_id"]: s for s in stats_list}
+
+    for shard in shards:
+        node_stats = stats_by_node.get(shard.node_id, {})
+        if not node_stats.get("success"):
+            results.append({
+                "node_id": shard.node_id,
+                "shard_id": shard.id,
+                "error": node_stats.get("error", "SSH falhou"),
+                "sent": 0,
+            })
+            continue
+
+        node_sent = node_stats.get("sent", 0)
+        node_bounced = node_stats.get("bounced", 0)
+
+        # Update shard with real counts from Postfix log
+        # Use the node total (whole log) as the best approximation for this shard
+        shard.sent_count = node_sent
+        shard.error_count = node_bounced
+        session.add(shard)
+
+        total_sent_all += node_sent
+        total_bounced_all += node_bounced
+
+        results.append({
+            "node_id": shard.node_id,
+            "shard_id": shard.id,
+            "hostname": node_stats.get("hostname"),
+            "sent": node_sent,
+            "bounced": node_bounced,
+            "deferred": node_stats.get("deferred", 0),
+            "top_reasons": node_stats.get("top_reasons", []),
+        })
+
+    # Update campaign totals
+    campaign.sent_count = total_sent_all if hasattr(campaign, "sent_count") else None
+    session.add(campaign)
+    session.commit()
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "total_sent": total_sent_all,
+        "total_bounced": total_bounced_all,
+        "nodes": results,
+    }

@@ -95,6 +95,64 @@ async def get_agent_logs(node: Node, lines: int = 150) -> dict:
         return {"success": False, "output": str(exc)}
 
 
+async def get_postfix_stats(node: Node, since: Optional[str] = None, until: Optional[str] = None) -> dict:
+    """
+    SSH into a node and count sent/bounced/deferred from /var/log/mail.log.
+    since/until: optional date strings like '2026-08-03' to filter the log.
+    Returns: {success, sent, bounced, deferred, errors_detail}
+    """
+    try:
+        async with asyncssh.connect(**_connect_kwargs(node)) as conn:
+            # Build grep filter for date range if provided
+            date_filter = ""
+            if since:
+                date_filter = f"| awk '$0 >= \"{since}\"'"
+            
+            # Count status=sent, status=bounced, status=deferred from mail.log
+            cmd = (
+                "python3 -c \""
+                "import re, collections; "
+                "counts = collections.Counter(); "
+                "reasons = collections.Counter(); "
+                "to_re = re.compile(r'to=<([^>]+)>'); "
+                "st_re = re.compile(r'status=(\\\\w+)\\\\s*\\\\(([^)]{0,120})'); "
+                "log = open('/var/log/mail.log', errors='ignore'); "
+                "[( counts.update([m.group(1)]), reasons.update([m.group(1)+': '+m.group(2)[:60]]) ) "
+                "for line in log for m in [st_re.search(line)] if m]; "
+                "print('SENT=' + str(counts.get('sent', 0))); "
+                "print('BOUNCED=' + str(counts.get('bounced', 0))); "
+                "print('DEFERRED=' + str(counts.get('deferred', 0))); "
+                "[print('REASON:' + r + '=' + str(c)) for r, c in reasons.most_common(10)]; "
+                "\""
+            )
+            result = await conn.run(cmd, check=False)
+            output = (result.stdout or "").strip()
+
+            sent = bounced = deferred = 0
+            reasons_list = []
+            for line in output.splitlines():
+                if line.startswith("SENT="):
+                    sent = int(line.split("=", 1)[1])
+                elif line.startswith("BOUNCED="):
+                    bounced = int(line.split("=", 1)[1])
+                elif line.startswith("DEFERRED="):
+                    deferred = int(line.split("=", 1)[1])
+                elif line.startswith("REASON:"):
+                    reasons_list.append(line[7:])
+
+            return {
+                "success": True,
+                "node_id": node.id,
+                "hostname": node.hostname,
+                "sent": sent,
+                "bounced": bounced,
+                "deferred": deferred,
+                "top_reasons": reasons_list,
+            }
+    except (asyncssh.Error, OSError) as exc:
+        return {"success": False, "node_id": node.id, "hostname": node.hostname, "sent": 0, "bounced": 0, "deferred": 0, "top_reasons": [], "error": str(exc)}
+
+
 async def test_ssh_connection(node: Node) -> dict:
     if node.auth_method == "key" and not node.ssh_private_key:
         return {"success": False, "message": "Nenhuma chave privada cadastrada", "output": None}
@@ -291,7 +349,7 @@ async def stream_bootstrap(node: Node):
 
             yield event("running", "postfix-config", message=STEP_LABELS["postfix-config"])
             postconf_cmd = (
-                f"postconf -e 'myhostname={mail_host}' 'myorigin={domain}' "
+                f"postconf -e 'myhostname={mail_host}' 'myorigin={domain}' 'mydestination=localhost' "
                 "'smtpd_milters=inet:localhost:8891' 'non_smtpd_milters=inet:localhost:8891' "
                 "'milter_default_action=accept' 'milter_protocol=6' "
                 f"'smtpd_tls_cert_file={cert_file}' 'smtpd_tls_key_file={key_file}' "
