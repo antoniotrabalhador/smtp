@@ -116,6 +116,10 @@ export default function Campaigns({ nodes }) {
       if (campaignRes.ok) {
         const nextCampaigns = await campaignRes.json()
         setCampaigns(nextCampaigns)
+        // Auto-fetch progress for active campaigns on first load
+        nextCampaigns.forEach(c => {
+          if (c.status === "running" || c.status === "paused") fetchProgress(c.id)
+        })
         setSelectedCampaignId((current) => {
           if (current && nextCampaigns.some((item) => item.id === current)) return current
           return null
@@ -131,9 +135,9 @@ export default function Campaigns({ nodes }) {
     if (res.ok) {
       const nextCampaigns = await res.json()
       setCampaigns(nextCampaigns)
-      // Refresh progress for running campaigns
+      // Refresh progress for running AND paused campaigns
       nextCampaigns.forEach(c => {
-        if (c.status === "running") fetchProgress(c.id)
+        if (c.status === "running" || c.status === "paused") fetchProgress(c.id)
       })
       setSelectedCampaignId((current) => {
         if (current && nextCampaigns.some((item) => item.id === current)) return current

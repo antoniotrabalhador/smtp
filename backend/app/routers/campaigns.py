@@ -58,6 +58,14 @@ def _serialize_campaign(campaign: Campaign, tasks: List[Task], nodes_by_id: dict
             }
         )
 
+    # For shard-based campaigns (launched via /launch), campaign.status is authoritative.
+    # Only fall back to task-derived status for legacy direct-task campaigns.
+    shard_statuses = {"running", "paused", "done", "scheduled"}
+    if campaign.status in shard_statuses or (campaign.status not in ("draft", None) and not tasks):
+        effective_status = campaign.status
+    else:
+        effective_status = campaign.status if campaign.status in ("scheduled", "draft") else _status_for_tasks(tasks)
+
     return {
         "id": campaign.id,
         "name": campaign.name,
@@ -74,7 +82,7 @@ def _serialize_campaign(campaign: Campaign, tasks: List[Task], nodes_by_id: dict
         "is_draft": campaign.is_draft,
         "total_recipients": campaign.total_recipients,
         "created_at": campaign.created_at,
-        "status": campaign.status if campaign.status in ("scheduled", "draft") else _status_for_tasks(tasks),
+        "status": effective_status,
         "sent_count": sum(task.sent_count for task in tasks),
         "error_count": sum(task.error_count for task in tasks),
         "nodes": node_summaries,
