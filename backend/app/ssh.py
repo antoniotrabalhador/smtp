@@ -97,46 +97,45 @@ async def get_agent_logs(node: Node, lines: int = 150) -> dict:
 
 async def get_postfix_stats(node: Node, since: Optional[str] = None, until: Optional[str] = None) -> dict:
     """
-    SSH into a node and count sent/bounced/deferred from /var/log/mail.log.
-    since/until: optional date strings like '2026-08-03' to filter the log.
-    Returns: {success, sent, bounced, deferred, errors_detail}
+    SSH into a node and count sent/bounced/deferred from /var/log/mail.log using grep.
+    Returns: {success, sent, bounced, deferred, top_reasons}
     """
     try:
         async with asyncssh.connect(**_connect_kwargs(node)) as conn:
-            # Build grep filter for date range if provided
-            date_filter = ""
-            if since:
-                date_filter = f"| awk '$0 >= \"{since}\"'"
-            
-            # Count status=sent, status=bounced, status=deferred from mail.log
-            cmd = (
-                "python3 -c \""
-                "import re, collections; "
-                "counts = collections.Counter(); "
-                "reasons = collections.Counter(); "
-                "to_re = re.compile(r'to=<([^>]+)>'); "
-                "st_re = re.compile(r'status=(\\\\w+)\\\\s*\\\\(([^)]{0,120})'); "
-                "log = open('/var/log/mail.log', errors='ignore'); "
-                "[( counts.update([m.group(1)]), reasons.update([m.group(1)+': '+m.group(2)[:60]]) ) "
-                "for line in log for m in [st_re.search(line)] if m]; "
-                "print('SENT=' + str(counts.get('sent', 0))); "
-                "print('BOUNCED=' + str(counts.get('bounced', 0))); "
-                "print('DEFERRED=' + str(counts.get('deferred', 0))); "
-                "[print('REASON:' + r + '=' + str(c)) for r, c in reasons.most_common(10)]; "
-                "\""
+            # Use simple grep to count each status type — no Python escaping needed
+            script = (
+                "LOG=/var/log/mail.log; "
+                "SENT=$(grep -c 'status=sent' $LOG 2>/dev/null || echo 0); "
+                "BOUNCED=$(grep -c 'status=bounced' $LOG 2>/dev/null || echo 0); "
+                "DEFERRED=$(grep -c 'status=deferred' $LOG 2>/dev/null || echo 0); "
+                "echo SENT=$SENT; "
+                "echo BOUNCED=$BOUNCED; "
+                "echo DEFERRED=$DEFERRED; "
+                # Top bounce reasons from DSN lines
+                "grep 'status=bounced' $LOG 2>/dev/null | grep -oP '\\(.*?\\)' | sort | uniq -c | sort -rn | head -5 | while read cnt reason; do echo \"REASON:$cnt $reason\"; done; "
+                "true"
             )
-            result = await conn.run(cmd, check=False)
+            result = await conn.run(script, check=False)
             output = (result.stdout or "").strip()
 
             sent = bounced = deferred = 0
             reasons_list = []
             for line in output.splitlines():
                 if line.startswith("SENT="):
-                    sent = int(line.split("=", 1)[1])
+                    try:
+                        sent = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        sent = 0
                 elif line.startswith("BOUNCED="):
-                    bounced = int(line.split("=", 1)[1])
+                    try:
+                        bounced = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        bounced = 0
                 elif line.startswith("DEFERRED="):
-                    deferred = int(line.split("=", 1)[1])
+                    try:
+                        deferred = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        deferred = 0
                 elif line.startswith("REASON:"):
                     reasons_list.append(line[7:])
 
@@ -149,8 +148,15 @@ async def get_postfix_stats(node: Node, since: Optional[str] = None, until: Opti
                 "deferred": deferred,
                 "top_reasons": reasons_list,
             }
-    except (asyncssh.Error, OSError) as exc:
-        return {"success": False, "node_id": node.id, "hostname": node.hostname, "sent": 0, "bounced": 0, "deferred": 0, "top_reasons": [], "error": str(exc)}
+    except Exception as exc:
+        return {
+            "success": False,
+            "node_id": node.id,
+            "hostname": node.hostname,
+            "sent": 0, "bounced": 0, "deferred": 0,
+            "top_reasons": [],
+            "error": str(exc),
+        }
 
 
 async def test_ssh_connection(node: Node) -> dict:

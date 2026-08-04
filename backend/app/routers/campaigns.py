@@ -698,9 +698,7 @@ async def sync_postfix_stats(campaign_id: int, session: Session = Depends(get_se
             "top_reasons": node_stats.get("top_reasons", []),
         })
 
-    # Update campaign totals
-    campaign.sent_count = total_sent_all if hasattr(campaign, "sent_count") else None
-    session.add(campaign)
+    # Update campaign totals (no campaign.sent_count field — it's computed from shards)
     session.commit()
 
     return {
