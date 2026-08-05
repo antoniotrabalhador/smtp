@@ -221,7 +221,9 @@ def report_task(
                 shard.status = "done"
                 shard.finished_at = datetime.utcnow()
             else:
-                shard.status = "pending"  # ready for next chunk
+                # Do not override "paused" if the user paused the campaign manually
+                if shard.status != "paused":
+                    shard.status = "pending"  # ready for next chunk
             session.add(shard)
 
     session.commit()
@@ -243,5 +245,27 @@ def heartbeat(
     node.agent_status = payload.get("status", "online")
     node.agent_last_seen = datetime.utcnow()
     session.add(node)
+    
+    # Check if there is an active task for this node that should be aborted
+    abort_task_id = 0
+    active_task_id = payload.get("active_task_id")
+    
+    if active_task_id:
+        active_task = session.get(Task, active_task_id)
+        if not active_task:
+            # Task was deleted from DB (e.g. campaign deleted), abort immediately
+            abort_task_id = active_task_id
+        else:
+            # Task exists, check if its shard is paused
+            if active_task.shard_id:
+                shard = session.get(CampaignShard, active_task.shard_id)
+                if shard and shard.status == "paused":
+                    abort_task_id = active_task_id
+
     session.commit()
-    return {"ok": True}
+    
+    resp = {"ok": True}
+    if abort_task_id > 0:
+        resp["abort_task_id"] = abort_task_id
+        
+    return resp

@@ -33,8 +33,9 @@ type TaskReport struct {
 }
 
 type Heartbeat struct {
-	Status  string `json:"status"`
-	Version string `json:"version"`
+	Status       string `json:"status"`
+	Version      string `json:"version"`
+	ActiveTaskID int    `json:"active_task_id,omitempty"`
 }
 
 type PanelClient struct {
@@ -108,12 +109,27 @@ func (c *PanelClient) ReportTask(taskID int, report TaskReport) error {
 	return nil
 }
 
-func (c *PanelClient) Heartbeat() error {
-	hb := Heartbeat{Status: "online", Version: "1.0.0"}
+type HeartbeatResponse struct {
+	Ok          bool `json:"ok"`
+	AbortTaskID int  `json:"abort_task_id,omitempty"`
+}
+
+func (c *PanelClient) Heartbeat(activeTaskID int) (*HeartbeatResponse, error) {
+	hb := Heartbeat{Status: "online", Version: "1.0.0", ActiveTaskID: activeTaskID}
 	resp, err := c.do("POST", fmt.Sprintf("/api/agent/heartbeat?node_id=%d", c.nodeID), hb)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	return nil
+	
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("heartbeat failed: HTTP %d", resp.StatusCode)
+	}
+	
+	var hbResp HeartbeatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&hbResp); err != nil {
+		return nil, err
+	}
+	
+	return &hbResp, nil
 }

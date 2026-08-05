@@ -34,13 +34,23 @@ func main() {
 		cancel() // sinaliza para o loop principal e para SendBatch
 	}()
 
+	// ── Variáveis de controle da tarefa atual ────────────────────────────────
+	var isBusy int32
+	var currentTaskID int32
+	var currentTaskCancel context.CancelFunc
+	var mu sync.Mutex // Protege currentTaskCancel e currentTaskID
+	var wg sync.WaitGroup
+
 	// ── Heartbeat em goroutine própria ───────────────────────────────────────
 	// Roda independentemente do loop de envio — nunca é bloqueado por SendBatch.
 	go func() {
 		// Heartbeat imediato ao iniciar
-		if err := client.Heartbeat(); err != nil {
+		if resp, err := client.Heartbeat(0); err != nil {
 			log.Printf("[warn] heartbeat falhou: %v", err)
+		} else if resp.AbortTaskID > 0 {
+			// Ignora no start
 		}
+
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -48,18 +58,26 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := client.Heartbeat(); err != nil {
+				activeTask := int(atomic.LoadInt32(&currentTaskID))
+				resp, err := client.Heartbeat(activeTask)
+				if err != nil {
 					log.Printf("[warn] heartbeat falhou: %v", err)
+					continue
+				}
+
+				if resp.AbortTaskID > 0 {
+					mu.Lock()
+					if currentTaskCancel != nil && atomic.LoadInt32(&currentTaskID) == int32(resp.AbortTaskID) {
+						log.Printf("[agent] recebida ordem de PAUSAR/ABORTAR tarefa %d!", resp.AbortTaskID)
+						currentTaskCancel()
+					}
+					mu.Unlock()
 				}
 			}
 		}
 	}()
 
 	// ── Loop de polling de tarefas ───────────────────────────────────────────
-	// isBusy impede que um segundo task seja pego enquanto um já está rodando.
-	var isBusy int32
-	// wg permite aguardar o término da tarefa atual antes de encerrar.
-	var wg sync.WaitGroup
 
 	pollTicker := time.NewTicker(time.Duration(cfg.PollSecs) * time.Second)
 	defer pollTicker.Stop()
@@ -92,12 +110,25 @@ func main() {
 				task.ID, len(task.Recipients), task.RatePerHour, task.Subject)
 
 			atomic.StoreInt32(&isBusy, 1)
+			atomic.StoreInt32(&currentTaskID, int32(task.ID))
+			
+			taskCtx, taskCancel := context.WithCancel(ctx)
+			mu.Lock()
+			currentTaskCancel = taskCancel
+			mu.Unlock()
+			
 			wg.Add(1)
 			go func(t *Task) {
 				defer wg.Done()
-				defer atomic.StoreInt32(&isBusy, 0)
+				defer func() {
+					mu.Lock()
+					currentTaskCancel = nil
+					mu.Unlock()
+					atomic.StoreInt32(&isBusy, 0)
+					atomic.StoreInt32(&currentTaskID, 0)
+				}()
 
-				results := SendBatch(ctx, t)
+				results := SendBatch(taskCtx, t)
 				report := buildReport(results)
 
 				if err := client.ReportTask(t.ID, report); err != nil {
