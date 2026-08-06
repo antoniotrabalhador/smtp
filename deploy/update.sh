@@ -64,7 +64,7 @@ ok "Frontend buildado"
 if [[ -f "/etc/nginx/sites-available/smtp-panel" ]]; then
     if ! grep -q "client_max_body_size" "/etc/nginx/sites-available/smtp-panel"; then
         info "Ajustando client_max_body_size no Nginx para suportar listas grandes..."
-        sed -i 's/server_name .*/&\n    client_max_body_size 50M;/' /etc/nginx/sites-available/smtp-panel
+        sed -i 's/server_name .*/&\n    client_max_body_size 500M;/' /etc/nginx/sites-available/smtp-panel
     fi
 fi
 
