@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy import text
 from sqlmodel import Session, select
 
@@ -41,109 +41,115 @@ def create_recipient_list(payload: dict, session: Session = Depends(get_session)
 
 
 @router.post("/{list_id}/upload")
-async def upload_csv(
+def upload_csv(
     list_id: int,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
-    """Stream-parse a CSV/TXT file and bulk-insert valid emails."""
+    """Stream-parse a CSV/TXT file and bulk-insert valid emails in the background."""
     rl = session.get(RecipientList, list_id)
     if not rl:
         raise HTTPException(status_code=404, detail="Lista não encontrada")
 
-    # Get current max row_index for this list (in case of append)
-    existing_max = session.exec(
-        select(Recipient.row_index)
-        .where(Recipient.list_id == list_id)
-        .order_by(Recipient.row_index.desc())
-    ).first()
-    next_index = (existing_max + 1) if existing_max is not None else 0
-
-    content = await file.read()
-    text_content = content.decode("utf-8", errors="replace")
-
-    # Auto-detect: CSV with header, CSV without, or plain list
-    lines = text_content.splitlines()
-    reader = csv.reader(lines)
-
-    added = 0
-    skipped_invalid = 0
-    skipped_duplicate = 0
-
-    # Load existing emails for this list to detect duplicates (using a set)
-    existing_emails: set = set(
-        session.exec(
-            text(f"SELECT email FROM recipient WHERE list_id = {list_id}")
-        ).all()
-    )
-    existing_emails = {row[0].lower() for row in existing_emails}
-
-    batch: list[dict] = []
-
-    def flush_batch():
-        nonlocal next_index
-        if not batch:
-            return
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    "INSERT INTO recipient (list_id, email, status, row_index) "
-                    "VALUES (:list_id, :email, :status, :row_index)"
-                ),
-                batch,
-            )
-            conn.commit()
-        batch.clear()
-
-    for row in reader:
-        if not row:
-            continue
-        # Find first column that looks like an email
-        email_col = None
-        for cell in row:
-            cell = cell.strip().lower()
-            if _valid_email(cell):
-                email_col = cell
-                break
-        if not email_col:
-            skipped_invalid += 1
-            continue
-        if email_col in existing_emails:
-            skipped_duplicate += 1
-            continue
-
-        existing_emails.add(email_col)
-        batch.append({"list_id": list_id, "email": email_col, "status": "active", "row_index": next_index})
-        next_index += 1
-        added += 1
-
-        if len(batch) >= CHUNK:
-            flush_batch()
-
-    flush_batch()
-
-    # Update counts
-    total = session.exec(
-        text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {list_id}")
-    ).one()[0]
-    active = session.exec(
-        text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {list_id} AND status = 'active'")
-    ).one()[0]
-
-    rl.total_count = total
-    rl.active_count = active
-    session.add(rl)
-    session.commit()
-    session.refresh(rl)
+    content = file.file.read()
+    background_tasks.add_task(process_csv_background, list_id, content)
 
     return {
         "ok": True,
-        "added": added,
-        "skipped_invalid": skipped_invalid,
-        "skipped_duplicate": skipped_duplicate,
-        "total_count": rl.total_count,
-        "active_count": rl.active_count,
+        "message": "Upload recebido! Processando em segundo plano. Atualize a página em alguns instantes."
     }
+
+def process_csv_background(list_id: int, content: bytes):
+    """Background task to parse and insert emails to avoid timeouts."""
+    # We must create a new session since the request's session is closed
+    with Session(engine) as session:
+        rl = session.get(RecipientList, list_id)
+        if not rl:
+            return
+
+        # Get current max row_index for this list (in case of append)
+        existing_max = session.exec(
+            select(Recipient.row_index)
+            .where(Recipient.list_id == list_id)
+            .order_by(Recipient.row_index.desc())
+        ).first()
+        next_index = (existing_max + 1) if existing_max is not None else 0
+
+        text_content = content.decode("utf-8", errors="replace")
+
+        # Auto-detect: CSV with header, CSV without, or plain list
+        lines = text_content.splitlines()
+        reader = csv.reader(lines)
+
+        added = 0
+        skipped_invalid = 0
+        skipped_duplicate = 0
+
+        # Load existing emails for this list to detect duplicates (using a set)
+        existing_emails: set = set(
+            session.exec(
+                text(f"SELECT email FROM recipient WHERE list_id = {list_id}")
+            ).all()
+        )
+        existing_emails = {row[0].lower() for row in existing_emails}
+
+        batch: list[dict] = []
+
+        def flush_batch():
+            nonlocal next_index
+            if not batch:
+                return
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO recipient (list_id, email, status, row_index) "
+                        "VALUES (:list_id, :email, :status, :row_index)"
+                    ),
+                    batch,
+                )
+                conn.commit()
+            batch.clear()
+
+        for row in reader:
+            if not row:
+                continue
+            # Find first column that looks like an email
+            email_col = None
+            for cell in row:
+                cell = cell.strip().lower()
+                if _valid_email(cell):
+                    email_col = cell
+                    break
+            if not email_col:
+                skipped_invalid += 1
+                continue
+            if email_col in existing_emails:
+                skipped_duplicate += 1
+                continue
+
+            existing_emails.add(email_col)
+            batch.append({"list_id": list_id, "email": email_col, "status": "active", "row_index": next_index})
+            next_index += 1
+            added += 1
+
+            if len(batch) >= CHUNK:
+                flush_batch()
+
+        flush_batch()
+
+        # Update counts
+        total = session.exec(
+            text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {list_id}")
+        ).one()[0]
+        active = session.exec(
+            text(f"SELECT COUNT(*) FROM recipient WHERE list_id = {list_id} AND status = 'active'")
+        ).one()[0]
+
+        rl.total_count = total
+        rl.active_count = active
+        session.add(rl)
+        session.commit()
 
 
 @router.get("/{list_id}", response_model=RecipientListRead)

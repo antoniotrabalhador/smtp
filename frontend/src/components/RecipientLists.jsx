@@ -176,7 +176,9 @@ export default function RecipientLists() {
                     fontSize: "0.82em", color: result.ok ? "#3fb950" : "#f85149",
                   }}>
                     {result.ok
-                      ? `✅ +${result.added?.toLocaleString()} adicionados · ${result.skipped_duplicate?.toLocaleString()} duplicados ignorados · ${result.skipped_invalid?.toLocaleString()} inválidos · Total: ${result.total_count?.toLocaleString()} (${result.active_count?.toLocaleString()} ativos)`
+                      ? result.message
+                        ? `⏳ ${result.message}`
+                        : `✅ +${result.added?.toLocaleString()} adicionados · ${result.skipped_duplicate?.toLocaleString()} duplicados ignorados · ${result.skipped_invalid?.toLocaleString()} inválidos · Total: ${result.total_count?.toLocaleString()} (${result.active_count?.toLocaleString()} ativos)`
                       : `❌ Erro: ${result.error || result.detail}`
                     }
                   </div>

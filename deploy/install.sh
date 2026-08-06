@@ -197,6 +197,7 @@ printf '%s\n' \
     '    listen 80;' \
     '    listen [::]:80;' \
     '    server_name _;' \
+    '    client_max_body_size 50M;' \
     '' \
     '    location /api/ {' \
     '        proxy_pass         http://127.0.0.1:8000;' \
@@ -266,6 +267,7 @@ if [[ -n "$PANEL_DOMAIN" ]]; then
         '    listen 80;' \
         '    listen [::]:80;' \
         "    server_name $PANEL_DOMAIN;" \
+        '    client_max_body_size 50M;' \
         '' \
         '    location /api/ {' \
         '        proxy_pass         http://127.0.0.1:8000;' \
