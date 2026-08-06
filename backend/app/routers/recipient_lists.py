@@ -69,6 +69,7 @@ def upload_csv(
 
 def process_csv_background(list_id: int, file_path: str):
     """Background task to stream-parse and insert emails to avoid OOM and timeouts."""
+    print(f"[List {list_id}] Iniciando processamento do arquivo em background...")
     try:
         # We must create a new session since the request's session is closed
         with Session(engine) as session:
@@ -111,6 +112,7 @@ def process_csv_background(list_id: int, file_path: str):
                         batch,
                     )
                     conn.commit()
+                print(f"[List {list_id}] Lote inserido... Total salvo até agora: {added}")
                 batch.clear()
 
             with open(file_path, "rt", encoding="utf-8", errors="replace") as f:
@@ -154,12 +156,14 @@ def process_csv_background(list_id: int, file_path: str):
             rl.active_count = active
             session.add(rl)
             session.commit()
+            print(f"[List {list_id}] Concluído com sucesso! Total na lista: {total}")
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        error_msg = traceback.format_exc()
+        print(f"[List {list_id}] ERRO GRAVE no background:\n{error_msg}")
         # Optionally, save it to a file so it's easy to read
         with open("/tmp/bg_task_error.log", "a") as f_err:
-            f_err.write(traceback.format_exc() + "\n")
+            f_err.write(error_msg + "\n")
     finally:
         # Always clean up the temporary file
         if os.path.exists(file_path):
