@@ -3,9 +3,19 @@ import os
 from sqlalchemy import text
 from sqlmodel import SQLModel, Session, create_engine
 
+from sqlalchemy import event
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./panel.db")
 ENGINE_KWARGS = {"connect_args": {"check_same_thread": False}} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, **ENGINE_KWARGS)
+
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 NEW_NODE_COLUMNS = {
     "domain": "TEXT",

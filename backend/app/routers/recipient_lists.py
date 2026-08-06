@@ -154,6 +154,12 @@ def process_csv_background(list_id: int, file_path: str):
             rl.active_count = active
             session.add(rl)
             session.commit()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Optionally, save it to a file so it's easy to read
+        with open("/tmp/bg_task_error.log", "a") as f_err:
+            f_err.write(traceback.format_exc() + "\n")
     finally:
         # Always clean up the temporary file
         if os.path.exists(file_path):
